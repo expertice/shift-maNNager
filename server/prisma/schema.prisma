@@ -1,0 +1,519 @@
+// Prisma schema для shift-Manager
+// Генератор клиента Prisma
+generator client {
+  provider = "prisma-client-js"
+}
+
+// Источник данных - PostgreSQL
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============ Основные таблицы системы ============
+
+/// Суперпользователи системы
+model User {
+  id           String   @id @default(uuid())
+  email        String   @unique
+  passwordHash String   @map("password_hash")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  // Relations
+  ownedSchedules      Schedule[]           @relation("ScheduleOwner")
+  schedulePermissions SchedulePermission[]
+
+  @@map("users")
+}
+
+/// Схемы планирования
+model Schedule {
+  id          String         @id @default(uuid())
+  ownerUserId String         @map("owner_user_id")
+  name        String
+  startDate   DateTime       @map("start_date")
+  endDate     DateTime       @map("end_date")
+  status      ScheduleStatus
+  createdAt   DateTime       @default(now()) @map("created_at")
+  updatedAt   DateTime       @updatedAt @map("updated_at")
+
+  // Relations
+  owner                  User                      @relation("ScheduleOwner", fields: [ownerUserId], references: [id])
+  permissions            SchedulePermission[]
+  departments            Department[]
+  employees              Employee[]
+  shifts                 DailyShift[]
+  conflicts              Conflict[]
+  shiftAssignments       ScheduleShiftAssignment[]
+  vacationRules          VacationRule?
+  calendarEvents         CalendarEvent[]
+  workHourTracking       WorkHourTracking[]
+  changeHistory          ChangeHistory[]
+  rosterPatternInstances RosterPatternInstance[]
+  shiftSwapRequests      ShiftSwapRequest[]
+
+  @@map("schedules")
+}
+
+enum ScheduleStatus {
+  draft
+  published
+  completed
+  archived
+}
+
+/// Права доступа к схемам
+model SchedulePermission {
+  id         String   @id @default(uuid())
+  scheduleId String   @map("schedule_id")
+  userId     String   @map("user_id")
+  role       UserRole
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  // Relations
+  schedule Schedule @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([scheduleId, userId])
+  @@map("schedule_permissions")
+}
+
+enum UserRole {
+  owner
+  editor
+  viewer
+}
+
+// ============ Управление отделами и сотрудниками ============
+
+/// Отделы в схеме
+model Department {
+  id         String @id @default(uuid())
+  scheduleId String @map("schedule_id")
+  name       String
+
+  // Relations
+  schedule  Schedule   @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
+  employees Employee[]
+
+  @@map("departments")
+}
+
+/// Сотрудники в схеме
+model Employee {
+  id             String    @id @default(uuid())
+  scheduleId     String    @map("schedule_id")
+  departmentId   String?   @map("department_id")
+  fullName       String    @map("full_name")
+  tabNumber      String    @map("tab_number")
+  birthDate      DateTime? @map("birth_date")
+  loginId        String?   @map("login_id")
+  passwordHash   String?   @map("password_hash")
+  passwordExpiry DateTime? @map("password_expiry")
+  isPlaceholder  Boolean   @default(false) @map("is_placeholder")
+  createdAt      DateTime  @default(now()) @map("created_at")
+
+  // Relations
+  schedule               Schedule                  @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
+  department             Department?               @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+  restrictions           EmployeeRestriction[]
+  shifts                 DailyShift[]
+  vacations              Vacation[]
+  businessTrips          BusinessTrip[]
+  shiftAssignments       EmployeeShiftAssignment[]
+  conflictSolutions      ConflictSolution[]
+  calendarEvents         CalendarEvent[]
+  workHourTracking       WorkHourTracking[]
+  changeHistory          ChangeHistory[]
+  rosterPatternInstances RosterPatternInstance[]
+  swapRequestsInitiator  ShiftSwapRequest[]        @relation("SwapRequestInitiator")
+  swapRequestsFrom       ShiftSwapRequest[]        @relation("SwapRequestFrom")
+  swapRequestsTo         ShiftSwapRequest[]        @relation("SwapRequestTo")
+
+  @@map("employees")
+}
+
+/// Ограничения на сотрудников
+model EmployeeRestriction {
+  id              String                  @id @default(uuid())
+  employeeId      String                  @map("employee_id")
+  restrictionType EmployeeRestrictionType @map("restriction_type")
+  value           String
+
+  // Relations
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  @@map("employee_restrictions")
+}
+
+enum EmployeeRestrictionType {
+  no_night_shifts
+  max_hours_per_week
+  custom
+}
+
+// ============ Профили смен и типы смен ============
+
+/// Профили смен (глобальные шаблоны)
+model ShiftProfile {
+  id           String  @id @default(uuid())
+  name         String
+  cycleLength  Int     @map("cycle_length")
+  minEmployees Int     @map("min_employees")
+  description  String?
+
+  // Relations
+  shiftTypes       ShiftType[]
+  patterns         ShiftProfilePattern[]
+  shiftAssignments ScheduleShiftAssignment[]
+
+  @@map("shift_profiles")
+}
+
+/// Типы смен в профилях
+model ShiftType {
+  id              String  @id @default(uuid())
+  shiftProfileId  String  @map("shift_profile_id")
+  name            String
+  startTime       String  @map("start_time") // TIME хранится как String в Prisma
+  endTime         String  @map("end_time")
+  breaks          Json // Массив перерывов
+  nightHoursCount Int     @map("night_hours_count")
+  workingHours    Decimal @map("working_hours") @db.Decimal(5, 2)
+  color           String? @db.VarChar(16)
+
+  // Relations
+  shiftProfile ShiftProfile @relation(fields: [shiftProfileId], references: [id], onDelete: Cascade)
+  shifts       DailyShift[]
+
+  @@map("shift_types")
+}
+
+/// Паттерны в профилях смен
+model ShiftProfilePattern {
+  id             String @id @default(uuid())
+  shiftProfileId String @map("shift_profile_id")
+  patternNumber  Int    @map("pattern_number")
+  cycleLength    Int    @map("cycle_length")
+  sequence       Json // Массив ID типов смен или null
+
+  // Relations
+  shiftProfile           ShiftProfile            @relation(fields: [shiftProfileId], references: [id], onDelete: Cascade)
+  rosterPatternInstances RosterPatternInstance[]
+
+  @@map("shift_profile_patterns")
+}
+
+// ============ Назначение смен сотрудникам ============
+
+/// Применение профилей смен к схеме
+model ScheduleShiftAssignment {
+  id               String    @id @default(uuid())
+  scheduleId       String    @map("schedule_id")
+  shiftProfileId   String    @map("shift_profile_id")
+  assignmentNumber Int       @map("assignment_number")
+  startDate        DateTime? @map("start_date") @db.Date
+  createdAt        DateTime  @default(now()) @map("created_at")
+
+  // Relations
+  schedule            Schedule                  @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
+  shiftProfile        ShiftProfile              @relation(fields: [shiftProfileId], references: [id], onDelete: Cascade)
+  employeeAssignments EmployeeShiftAssignment[]
+
+  @@map("schedule_shift_assignments")
+}
+
+/// Назначение паттерна сотруднику
+model EmployeeShiftAssignment {
+  id                        String   @id @default(uuid())
+  scheduleShiftAssignmentId String   @map("schedule_shift_assignments_id")
+  employeeId                String   @map("employee_id")
+  patternNumber             Int      @map("pattern_number")
+  assignedAt                DateTime @default(now()) @map("assigned_at")
+
+  // Relations
+  scheduleShiftAssignment ScheduleShiftAssignment @relation(fields: [scheduleShiftAssignmentId], references: [id], onDelete: Cascade)
+  employee                Employee                @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  @@map("employee_shift_assignments")
+}
+
+/// Смены по дням
+model DailyShift {
+  id             String      @id @default(uuid())
+  scheduleId     String      @map("schedule_id")
+  employeeId     String      @map("employee_id")
+  date           DateTime    @db.Date
+  shiftTypeId    String?     @map("shift_type_id")
+  status         ShiftStatus
+  modifiedReason String?     @map("modified_reason")
+  createdAt      DateTime    @default(now()) @map("created_at")
+  updatedAt      DateTime    @updatedAt @map("updated_at")
+
+  // Relations
+  schedule  Schedule   @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
+  employee  Employee   @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  shiftType ShiftType? @relation(fields: [shiftTypeId], references: [id], onDelete: SetNull)
+  conflicts Conflict[]
+
+  @@unique([scheduleId, employeeId, date])
+  @@map("daily_shifts")
+}
+
+enum ShiftStatus {
+  scheduled
+  modified
+  cancelled
+}
+
+/// Запросы на обмен сменами
+model ShiftSwapRequest {
+  id                  String                 @id @default(uuid())
+  scheduleId          String                 @map("schedule_id")
+  initiatorEmployeeId String                 @map("initiator_employee_id")
+  fromEmployeeId      String                 @map("from_employee_id")
+  fromDate            DateTime               @map("from_date") @db.Date
+  toEmployeeId        String                 @map("to_employee_id")
+  toDate              DateTime               @map("to_date") @db.Date
+  status              ShiftSwapRequestStatus @default(pending)
+  createdAt           DateTime               @default(now()) @map("created_at")
+  updatedAt           DateTime               @updatedAt @map("updated_at")
+
+  // Relations
+  schedule          Schedule @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
+  initiatorEmployee Employee @relation("SwapRequestInitiator", fields: [initiatorEmployeeId], references: [id], onDelete: Cascade)
+  fromEmployee      Employee @relation("SwapRequestFrom", fields: [fromEmployeeId], references: [id], onDelete: Cascade)
+  toEmployee        Employee @relation("SwapRequestTo", fields: [toEmployeeId], references: [id], onDelete: Cascade)
+
+  @@map("shift_swap_requests")
+}
+
+enum ShiftSwapRequestStatus {
+  pending
+  approved
+  rejected
+  cancelled
+}
+
+/// Экземпляр паттерна на сотрудника в пределах схемы (ростера)
+model RosterPatternInstance {
+  id            String  @id @default(uuid())
+  scheduleId    String  @map("schedule_id")
+  employeeId    String  @map("employee_id")
+  patternId     String? @map("pattern_id")
+  startIndex    Int     @default(0) @map("start_index")
+  sequence      Json
+  lockedIndices Json?   @map("locked_indices")
+
+  // Relations
+  schedule Schedule             @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
+  employee Employee             @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  pattern  ShiftProfilePattern? @relation(fields: [patternId], references: [id], onDelete: SetNull)
+
+  @@unique([scheduleId, employeeId])
+  @@map("roster_pattern_instances")
+}
+
+// ============ Отпуска и командировки ============
+
+/// Правила отпусков по схеме
+model VacationRule {
+  id                String @id @default(uuid())
+  scheduleId        String @unique @map("schedule_id")
+  availableDays     Int    @map("available_days")
+  minContinuousDays Int    @default(14) @map("min_continuous_days")
+
+  // Relations
+  schedule Schedule @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
+
+  @@map("vacation_rules")
+}
+
+/// Отпуска сотрудников
+model Vacation {
+  id         String         @id @default(uuid())
+  employeeId String         @map("employee_id")
+  startDate  DateTime       @map("start_date") @db.Date
+  endDate    DateTime       @map("end_date") @db.Date
+  status     VacationStatus
+  createdBy  String         @map("created_by") // ID пользователя или сотрудника
+  createdAt  DateTime       @default(now()) @map("created_at")
+  updatedAt  DateTime       @updatedAt @map("updated_at")
+
+  // Relations
+  employee  Employee   @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  conflicts Conflict[]
+
+  @@map("vacations")
+}
+
+enum VacationStatus {
+  approved
+  pending
+  rejected
+  cancelled
+}
+
+/// Командировки
+model BusinessTrip {
+  id         String             @id @default(uuid())
+  employeeId String             @map("employee_id")
+  startDate  DateTime           @map("start_date") @db.Date
+  endDate    DateTime           @map("end_date") @db.Date
+  status     BusinessTripStatus
+  createdAt  DateTime           @default(now()) @map("created_at")
+  updatedAt  DateTime           @updatedAt @map("updated_at")
+
+  // Relations
+  employee  Employee   @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  conflicts Conflict[]
+
+  @@map("business_trips")
+}
+
+enum BusinessTripStatus {
+  approved
+  pending
+  rejected
+  cancelled
+}
+
+// ============ Управление конфликтами ============
+
+/// Конфликты между сменами и отпусками
+model Conflict {
+  id              String       @id @default(uuid())
+  scheduleId      String       @map("schedule_id")
+  dailyShiftId    String?      @map("daily_shift_id")
+  vacationId      String?      @map("vacation_id")
+  businessTripId  String?      @map("business_trip_id")
+  conflictType    ConflictType @map("conflict_type")
+  resolved        Boolean      @default(false)
+  resolutionNotes String?      @map("resolution_notes") @db.Text
+  createdAt       DateTime     @default(now()) @map("created_at")
+
+  // Relations
+  schedule     Schedule           @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
+  dailyShift   DailyShift?        @relation(fields: [dailyShiftId], references: [id], onDelete: Cascade)
+  vacation     Vacation?          @relation(fields: [vacationId], references: [id], onDelete: Cascade)
+  businessTrip BusinessTrip?      @relation(fields: [businessTripId], references: [id], onDelete: Cascade)
+  solutions    ConflictSolution[]
+
+  @@map("conflicts")
+}
+
+enum ConflictType {
+  shift_vs_vacation
+  shift_vs_business_trip
+  insufficient_coverage
+  vacation_overlap
+}
+
+/// Предложенные решения конфликтов
+model ConflictSolution {
+  id                   String                 @id @default(uuid())
+  conflictId           String                 @map("conflict_id")
+  employeeIdSubstitute String                 @map("employee_id_substitute")
+  newDate              DateTime?              @map("new_date") @db.Date
+  priority             Int
+  status               ConflictSolutionStatus
+
+  // Relations
+  conflict Conflict @relation(fields: [conflictId], references: [id], onDelete: Cascade)
+  employee Employee @relation(fields: [employeeIdSubstitute], references: [id], onDelete: Cascade)
+
+  @@map("conflict_solutions")
+}
+
+enum ConflictSolutionStatus {
+  proposed
+  accepted
+  rejected
+  manual_override
+}
+
+// ============ График праздников и событий ============
+
+/// Праздники, дни рождения, события
+model CalendarEvent {
+  id           String            @id @default(uuid())
+  scheduleId   String?           @map("schedule_id") // null для глобальных праздников
+  date         DateTime          @db.Date
+  eventType    CalendarEventType @map("event_type")
+  description  String
+  isWorkingDay Boolean           @default(false) @map("is_working_day")
+  employeeId   String?           @map("employee_id")
+
+  // Relations
+  schedule Schedule? @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
+  employee Employee? @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  @@map("calendar_events")
+}
+
+enum CalendarEventType {
+  holiday
+  birthday
+  custom_event
+  celebration
+}
+
+// ============ Отслеживание рабочих часов ============
+
+/// Аналитика рабочих часов
+model WorkHourTracking {
+  id                 String          @id @default(uuid())
+  employeeId         String          @map("employee_id")
+  scheduleId         String          @map("schedule_id")
+  date               DateTime        @db.Date
+  hoursWorked        Decimal         @map("hours_worked") @db.Decimal(5, 2)
+  nightHours         Decimal         @map("night_hours") @db.Decimal(5, 2)
+  holidayHours       Decimal         @map("holiday_hours") @db.Decimal(5, 2)
+  totalHours         Decimal         @map("total_hours") @db.Decimal(5, 2)
+  cumulativeHoursYTD Decimal         @map("cumulative_hours_ytd") @db.Decimal(8, 2)
+  status             WorkHoursStatus
+  calculatedAt       DateTime        @default(now()) @map("calculated_at")
+
+  // Relations
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  schedule Schedule @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
+
+  @@unique([employeeId, scheduleId, date])
+  @@map("work_hour_tracking")
+}
+
+enum WorkHoursStatus {
+  calculated
+  approved
+  adjusted
+}
+
+// ============ История изменений ============
+
+/// История всех изменений
+model ChangeHistory {
+  id         String     @id @default(uuid())
+  scheduleId String     @map("schedule_id")
+  userId     String?    @map("user_id")
+  employeeId String?    @map("employee_id")
+  tableName  String     @map("table_name")
+  recordId   String     @map("record_id")
+  changeType ChangeType @map("change_type")
+  oldValue   Json?      @map("old_value")
+  newValue   Json?      @map("new_value")
+  reason     String?    @db.Text
+  createdAt  DateTime   @default(now()) @map("created_at")
+  version    Int
+
+  // Relations
+  schedule Schedule  @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
+  employee Employee? @relation(fields: [employeeId], references: [id], onDelete: SetNull)
+
+  @@map("change_history")
+}
+
+enum ChangeType {
+  create
+  update
+  delete
+}

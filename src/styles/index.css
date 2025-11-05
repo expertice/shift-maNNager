@@ -1,0 +1,61 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* CSS Variables для темизации */
+:root {
+  --color-primary: #004b8a; /* Pantone 3005 */
+  --color-primary-light: #0075b3; /* Pantone 2945 */
+  --color-neutral: #999999; /* Cool Gray 10 */
+  --color-danger: #dc2c2c;
+  --color-warning: #ff8c00;
+  --spacing-sidebar: 280px;
+}
+
+/* Dark theme */
+.dark {
+  --color-primary: #0075b3;
+  --color-primary-light: #0099d9;
+  --color-neutral: #666666;
+}
+
+/* Базовые стили */
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
+    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Утилиты для смен */
+.shift-day {
+  background-color: var(--color-primary);
+  color: white;
+}
+
+.shift-night {
+  background-color: var(--color-primary-light);
+  color: white;
+}
+
+.shift-vacation {
+  background-color: var(--color-neutral);
+  color: white;
+}
+
+.shift-trip {
+  background-color: var(--color-warning);
+  color: white;
+}
+
+.shift-conflict {
+  border: 2px solid var(--color-danger);
+}
+

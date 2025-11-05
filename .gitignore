@@ -1,0 +1,56 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Environment variables
+.env
+.env.local
+.env.production.local
+.env.development.local
+
+# Testing
+coverage
+.nyc_output
+
+# Storybook
+storybook-static
+
+# Build
+build
+dist
+
+# Scripts temporary files
+*.pid
+backend.log
+frontend.log
+*.ps1.tmp
+
+# Database
+*.sqlite
+*.sqlite-journal
+*.db
+
+# Prisma
+server/prisma/dev.db
+server/prisma/dev.db-journal
