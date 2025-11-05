@@ -1,303 +1,884 @@
-# Shift Manager - Система планирования смен и отпусков
+# 🔄 Shift Manager - Система управления сменными графиками
 
-Интерактивная система планирования смен и отпусков для Норникеля с поддержкой real-time обновлений и автоматической генерации расписаний.
+<div align="center">
+
+![Version](https://img.shields.io/badge/version-0.2.0-blue.svg)
+![Node](https://img.shields.io/badge/node-%3E%3D18.0.0-brightgreen.svg)
+![TypeScript](https://img.shields.io/badge/TypeScript-5.0-blue)
+![React](https://img.shields.io/badge/React-18-61dafb)
+![License](https://img.shields.io/badge/license-Private-red)
+
+Комплексная система планирования смен и управления расписанием с поддержкой real-time обновлений и автоматической генерации графиков работы.
+
+[Быстрый старт](#-быстрый-старт) • [Документация](#-документация) • [CI/CD](#-cicd-pipeline) • [API](#-api-документация)
+
+</div>
+
+---
+
+## 📑 Содержание
+
+- [Особенности](#-особенности)
+- [Технологический стек](#️-технологический-стек)
+- [Быстрый старт](#-быстрый-старт)
+- [CI/CD Pipeline](#-cicd-pipeline)
+- [Структура проекта](#-структура-проекта)
+- [Развертывание](#-развертывание)
+- [API Документация](#-api-документация)
+- [Тестирование](#-тестирование)
+- [Разработка](#-разработка)
+
+---
+
+## ✨ Особенности
+
+### 🎯 Основной функционал
+
+- **📅 Интеллектуальное планирование смен** - автоматическая генерация расписаний на основе профилей смен (2/2, 3/3, и т.д.)
+- **👥 Управление сотрудниками** - полный контроль над персоналом и их графиками
+- **🔄 Real-time обновления** - мгновенная синхронизация изменений между пользователями через WebSocket
+- **📊 Помесячная визуализация** - расписание разбивается на таблицы по месяцам для удобного просмотра
+- **🎨 Цветовое кодирование** - визуальное различение типов смен с настраиваемыми цветами
+- **🔒 Управление доступом** - гибкая система ролей (owner, editor, viewer)
+- **📝 История изменений** - полный аудит всех операций в системе
+- **🏖️ Управление отпусками** - интерактивный календарь для планирования отпусков
+- **⚠️ Валидация покрытия** - автоматическая проверка минимального количества персонала
+- **🔐 Безопасная аутентификация** - JWT токены + bcrypt хеширование паролей
+
+### 🚀 Продвинутые возможности
+
+- **Drag & Drop** - перетаскивание смен для быстрого редактирования
+- **Экспорт в PDF** - генерация отчетов и расписаний
+- **Шаблоны графиков** - создание и переиспользование профилей смен
+- **Запросы на обмен сменами** - сотрудники могут запрашивать обмен сменами
+- **Конфликты и валидация** - автоматическое выявление проблем в расписании
+
+---
+
+## 🛠️ Технологический стек
+
+### Backend
+```
+Node.js + Express.js + TypeScript
+├── Prisma ORM → PostgreSQL
+├── Socket.io → Real-time коммуникация
+├── JWT → Аутентификация
+├── bcrypt → Безопасность паролей
+└── Vitest → Unit тестирование
+```
+
+### Frontend
+```
+React 18 + TypeScript + Vite
+├── React Router v6 → Навигация
+├── Zustand → State management
+├── TanStack Query → API & кеширование
+├── React Hook Form + Zod → Формы & валидация
+├── Tailwind CSS → Стилизация
+├── date-fns → Работа с датами
+└── Socket.io Client → Real-time
+```
+
+### DevOps & CI/CD
+```
+GitHub Actions → Автоматизация
+├── Docker → Контейнеризация
+├── Nginx → Reverse proxy
+├── PM2 → Process management
+├── PostgreSQL 14+ → База данных
+└── Trivy → Security scanning
+```
+
+---
 
 ## 🚀 Быстрый старт
 
-### Требования
+### Предварительные требования
 
-- Node.js >= 18.0.0
-- npm >= 9.0.0
-- Docker и Docker Compose (для базы данных)
-- PostgreSQL 14+
+- **Node.js** >= 18.0.0
+- **npm** >= 9.0.0
+- **Docker** и **Docker Compose** (для локальной БД)
+- **PostgreSQL** 14+ (для production)
 
-### Установка и запуск
+### Автоматический запуск (PowerShell для Windows)
 
-1. **Клонируйте репозиторий**
-   ```bash
-   git clone <repository-url>
-   cd shift-maNNager
-   ```
+```powershell
+# Первый запуск - установка и настройка
+.\first_start.ps1
 
-2. **Запустите базу данных**
-   ```bash
-   docker-compose up -d
-   ```
+# Обычный запуск
+.\start.ps1
 
-3. **Настройте бэкенд**
-   ```bash
-   cd server
-   npm install
-   
-   # Создайте .env файл
-   cp .env.example .env
-   # Отредактируйте .env и укажите правильные настройки
-   
-   # Примените миграции и заполните базу тестовыми данными
-   npx prisma migrate dev
-   npx prisma db seed
-   ```
+# Остановка
+.\stop.ps1
+```
 
-4. **Запустите бэкенд сервер**
-   ```bash
-   npm run dev
-   ```
-   Сервер будет доступен на `http://localhost:3000`
+### Автоматический запуск (Bash для Linux/Mac)
 
-5. **Настройте фронтенд**
-   ```bash
-   # Вернитесь в корневую директорию
-   cd ..
-   
-   npm install
-   
-   # Создайте .env файл (опционально)
-   cp .env.example .env
-   # Добавьте переменные:
-   # VITE_API_URL=http://localhost:3000/api/v1
-   # VITE_WS_URL=http://localhost:3000
-   ```
+```bash
+# Первый запуск
+chmod +x first_start.sh start.sh stop.sh
+./first_start.sh
 
-6. **Запустите фронтенд**
-   ```bash
-   npm run dev
-   ```
-   Приложение будет доступно на `http://localhost:5173`
+# Обычный запуск
+./start.sh
+
+# Остановка
+./stop.sh
+```
+
+### Ручная установка
+
+<details>
+<summary>Развернуть инструкции</summary>
+
+#### 1. Клонирование репозитория
+```bash
+git clone https://github.com/expertice/shift-maNNager.git
+cd shift-maNNager
+```
+
+#### 2. База данных
+```bash
+# Запуск PostgreSQL в Docker
+docker-compose up -d
+```
+
+#### 3. Backend настройка
+```bash
+cd server
+npm install
+
+# Создание .env файла
+cat > .env << EOF
+DATABASE_URL="postgresql://shift_user:shift_password@localhost:5433/shift_manager?schema=public"
+JWT_SECRET="your-super-secret-jwt-key-change-in-production"
+JWT_EXPIRES_IN="24h"
+CORS_ORIGIN="http://localhost:5173"
+PORT=3000
+NODE_ENV="development"
+EOF
+
+# Применение миграций и seed данных
+npx prisma migrate dev
+npx prisma db seed
+
+# Запуск backend
+npm run dev
+```
+Backend запустится на `http://localhost:3000`
+
+#### 4. Frontend настройка
+```bash
+# Возврат в корневую директорию
+cd ..
+npm install
+
+# Создание .env файла (опционально)
+cat > .env << EOF
+VITE_API_URL=http://localhost:3000/api/v1
+VITE_WS_URL=http://localhost:3000
+EOF
+
+# Запуск frontend
+npm run dev
+```
+Frontend запустится на `http://localhost:5173`
+
+</details>
+
+### 🔐 Тестовые данные для входа
+
+После `prisma db seed`:
+- **Admin**: `admin@example.com` / `admin123`
+- Сотрудники входят по одноразовым паролям, генерируемым в системе
+
+---
+
+## 🔄 CI/CD Pipeline
+
+Проект использует **GitHub Actions** для автоматизации процессов разработки и деплоя.
+
+### 📊 Workflow Pipeline
+
+```mermaid
+graph LR
+    A[Push/PR] --> B[Lint & Format]
+    A --> C[Type Check]
+    A --> D[Unit Tests]
+    B --> E[Build]
+    C --> E
+    D --> E
+    E --> F[Docker Build]
+    F --> G{Branch?}
+    G -->|develop| H[Deploy Staging]
+    G -->|main| I[Security Scan]
+    I --> J[Deploy Production]
+```
+
+### 🎯 Этапы CI/CD
+
+#### 1️⃣ **Lint & Format Check**
+- ESLint проверка кода
+- Prettier форматирование
+- Прогоняется на каждом push/PR
+
+#### 2️⃣ **TypeScript Type Check**
+- Проверка типов TypeScript
+- Валидация типовой безопасности
+
+#### 3️⃣ **Unit Tests**
+- Запуск всех unit тестов
+- Генерация отчета о покрытии
+- Загрузка в Codecov
+
+#### 4️⃣ **Build Application**
+- Сборка backend и frontend
+- Валидация успешности сборки
+- Сохранение артефактов
+
+#### 5️⃣ **Docker Build & Push**
+- Создание Docker образа
+- Push в GitHub Container Registry
+- Кеширование слоев для ускорения
+
+#### 6️⃣ **Security Scan**
+- Сканирование на уязвимости (Trivy)
+- Отправка результатов в Security tab
+- Блокировка при критических уязвимостях
+
+#### 7️⃣ **Deploy**
+- **Staging** (develop branch) - автоматический деплой
+- **Production** (main branch) - деплой после одобрения
+
+### 📁 Настройка CI/CD
+
+#### Создание файла workflow
+
+Файл `.github/workflows/ci-cd.yml` уже включен в репозиторий.
+
+```bash
+# Структура
+.github/
+└── workflows/
+    └── ci-cd.yml  # Основной CI/CD pipeline
+```
+
+#### Необходимые GitHub Secrets
+
+Настройте следующие secrets в настройках репозитория (`Settings` → `Secrets and variables` → `Actions`):
+
+```yaml
+# Для Docker Registry
+GITHUB_TOKEN: автоматически доступен
+
+# Для деплоя (опционально)
+DEPLOY_SSH_KEY: ваш SSH ключ для деплоя на сервер
+DEPLOY_HOST: адрес production сервера
+DEPLOY_USER: пользователь для деплоя
+
+# Для уведомлений (опционально)
+SLACK_WEBHOOK: webhook для уведомлений в Slack
+```
+
+#### Запуск Workflow
+
+Pipeline запускается автоматически при:
+- Push в ветки `main` или `develop`
+- Создании Pull Request в `main` или `develop`
+
+Или вручную:
+1. Перейдите в `Actions` на GitHub
+2. Выберите `CI/CD Pipeline`
+3. Нажмите `Run workflow`
+
+### 🐳 Docker Deployment
+
+#### Локальная сборка Docker образа
+
+```bash
+# Frontend
+docker build -t shift-manager-frontend:latest .
+
+# Backend
+docker build -t shift-manager-backend:latest ./server
+```
+
+#### Использование Docker Compose
+
+```bash
+# Полный стек (БД + Backend + Frontend)
+docker-compose up -d
+
+# Остановка
+docker-compose down
+
+# Просмотр логов
+docker-compose logs -f
+```
+
+### 📈 Мониторинг Pipeline
+
+- **Build статус**: ![Build Status](https://github.com/expertice/shift-maNNager/actions/workflows/ci-cd.yml/badge.svg)
+- **Coverage**: Доступен через Codecov
+- **Security**: GitHub Security tab
+
+---
 
 ## 📁 Структура проекта
 
 ```
 shift-maNNager/
-├── server/                 # Backend (Node.js + Express + Prisma)
+├── .github/
+│   └── workflows/
+│       └── ci-cd.yml          # GitHub Actions CI/CD
+│
+├── server/                     # Backend приложение
 │   ├── src/
-│   │   ├── controllers/   # Контроллеры API
-│   │   ├── services/        # Бизнес-логика
-│   │   ├── routes/        # Маршруты API
-│   │   ├── middleware/    # Middleware (auth, error handling)
-│   │   ├── lib/           # Утилиты и библиотеки
-│   │   └── types/         # TypeScript типы
+│   │   ├── controllers/       # API контроллеры
+│   │   ├── services/          # Бизнес-логика
+│   │   ├── routes/            # Express маршруты
+│   │   ├── middleware/        # Auth, error handling
+│   │   ├── lib/               # Утилиты (Prisma client)
+│   │   ├── types/             # TypeScript типы
+│   │   └── utils/             # Вспомогательные функции
 │   ├── prisma/
-│   │   ├── schema.prisma  # Схема базы данных
-│   │   └── seed.ts        # Seed данные
+│   │   ├── schema.prisma      # Схема БД
+│   │   ├── migrations/        # Миграции БД
+│   │   └── seed.ts            # Тестовые данные
+│   ├── dist/                  # Скомпилированный JS
 │   └── package.json
 │
-├── src/                    # Frontend (React + TypeScript + Vite)
-│   ├── components/         # React компоненты
-│   │   ├── common/        # Базовые UI компоненты
-│   │   ├── layout/        # Layout компоненты
-│   │   └── shifts/        # Компоненты для работы со сменами
-│   ├── pages/             # Страницы приложения
-│   ├── services/           # API сервисы
-│   ├── hooks/              # React хуки
-│   ├── store/              # Zustand stores
-│   ├── types/              # TypeScript типы
-│   └── styles/             # Стили
+├── src/                        # Frontend приложение
+│   ├── components/
+│   │   ├── common/            # Переиспользуемые UI компоненты
+│   │   ├── layout/            # Layout компоненты
+│   │   ├── schedules/         # Компоненты расписаний
+│   │   └── shifts/            # Компоненты смен
+│   ├── pages/                 # Страницы приложения
+│   ├── services/
+│   │   ├── api/               # API клиенты
+│   │   └── utils/             # Утилиты (PDF, валидация)
+│   ├── hooks/                 # React hooks
+│   ├── store/                 # Zustand stores
+│   ├── types/                 # TypeScript типы
+│   └── styles/                # CSS стили
 │
-├── documents/              # Документация
-├── docker-compose.yml      # Docker конфигурация для PostgreSQL
-└── package.json
+├── documents/                  # Документация
+│   ├── API_CONTRACTS.md       # API спецификация
+│   ├── DEVELOPER_GUIDE.md     # Руководство разработчика
+│   ├── FRONTEND_ARCH.md       # Архитектура frontend
+│   └── ...
+│
+├── docker-compose.yml          # Docker конфигурация
+├── Dockerfile                  # Docker образ (если нужен)
+├── start.ps1 / start.sh        # Скрипты запуска
+├── stop.ps1 / stop.sh          # Скрипты остановки
+└── first_start.ps1             # Первоначальная настройка
 ```
 
-## 🔐 Авторизация
+---
 
-### Суперпользователь
-Для входа используйте тестовые данные из seed:
-- Email: `admin@example.com`
-- Password: `admin123` (или как указано в seed)
+## 🚢 Развертывание
 
-### Сотрудники
-Сотрудники входят по одноразовым паролям, сгенерированным в системе.
+### Production Deployment
 
-## 📋 Основные функции
+#### Вариант 1: Традиционный (VPS/Dedicated Server)
 
-### 1. Управление расписаниями
-- Создание, редактирование, удаление расписаний
-- Дублирование существующих расписаний
-- Управление статусами (черновик, опубликовано, завершено, архив)
+<details>
+<summary>Развернуть инструкции</summary>
 
-### 2. Управление сотрудниками
-- Добавление сотрудников в расписание
-- Редактирование информации о сотрудниках
-- Генерация одноразовых паролей для входа
-- Удаление сотрудников
+**1. Подготовка сервера**
+```bash
+# Обновление системы
+sudo apt update && sudo apt upgrade -y
 
-### 3. Генерация смен
-- Выбор профиля смен (например, 2/2, 3/3)
-- Автоматическая генерация расписания на основе профилей
-- Выбор сотрудников и периода генерации
+# Установка Node.js
+curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
+sudo apt install -y nodejs
 
-### 4. Календарь смен (ростер)
-- **Помесячное отображение**: расписание разбивается на таблицы по месяцам (максимум 31 день на таблицу)
-- **Drag-and-Drop**: перетаскивание смен внутри строки сотрудника для изменения последовательности
-- **Цветовое кодирование**: типы смен отображаются с цветами из профилей смен
-- **Валидация покрытия**: автоматическая подсветка дней с недостаточным количеством персонала
-- **Блокировка слотов**: недоступные для редактирования дни (вне периода, пустышки) визуально заблокированы
+# Установка PostgreSQL
+sudo apt install -y postgresql postgresql-contrib
 
-### 5. Управление отпусками
-- Интерактивный календарь для выбора отпусков
-- Выбор диапазона дат кликом
-- Валидация периодов отпуска
-- Real-time обновления при изменении отпусков
+# Установка Nginx
+sudo apt install -y nginx
 
-### 6. История изменений
-- Журнал всех операций в системе
-- Фильтрация по типу изменений
-- Пагинация для больших объемов данных
+# Установка PM2
+sudo npm install -g pm2
+```
 
-### 7. Управление правами доступа
-- Назначение ролей пользователям (owner, editor, viewer)
-- Изменение прав доступа
-- Удаление пользователей из расписания
+**2. Клонирование и сборка**
+```bash
+cd /var/www
+git clone https://github.com/expertice/shift-maNNager.git
+cd shift-maNNager
 
-## 🛠️ Технологический стек
+# Backend
+cd server
+npm ci --production=false
+npm run build
+npx prisma migrate deploy
+npx prisma db seed
 
-### Backend
-- **Node.js** + **Express.js** - серверное приложение
-- **TypeScript** - типизация
-- **Prisma** - ORM для работы с БД
-- **PostgreSQL** - база данных
-- **Socket.io** - real-time обновления
-- **JWT** - аутентификация
-- **bcrypt** - хеширование паролей
+# Frontend
+cd ..
+npm ci
+npm run build
+```
 
-### Frontend
-- **React 18** - UI библиотека
-- **TypeScript** - типизация
-- **Vite** - сборщик и dev-сервер
-- **React Router v6** - маршрутизация
-- **Zustand** - управление состоянием
-- **TanStack Query** - работа с API и кеширование
-- **React Hook Form + Zod** - формы и валидация
-- **Tailwind CSS** - стилизация
-- **date-fns** - работа с датами
-- **Socket.io Client** - real-time подключения
+**3. Настройка переменных окружения**
+```bash
+# server/.env
+DATABASE_URL="postgresql://user:password@localhost:5432/shift_manager?schema=public"
+JWT_SECRET="используйте-длинный-случайный-ключ-минимум-32-символа"
+JWT_EXPIRES_IN="24h"
+CORS_ORIGIN="https://yourdomain.com"
+PORT=3000
+NODE_ENV="production"
+```
+
+**4. Запуск с PM2**
+```bash
+cd server
+pm2 start dist/index.js --name shift-manager-api
+pm2 save
+pm2 startup
+```
+
+**5. Настройка Nginx**
+```nginx
+# /etc/nginx/sites-available/shift-manager
+server {
+    listen 80;
+    server_name yourdomain.com;
+
+    root /var/www/shift-maNNager/dist;
+    index index.html;
+
+    # Frontend
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+
+    # Backend API
+    location /api {
+        proxy_pass http://localhost:3000;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host $host;
+        proxy_cache_bypass $http_upgrade;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+
+    # WebSocket
+    location /socket.io {
+        proxy_pass http://localhost:3000;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+    }
+}
+```
+
+```bash
+# Активация конфигурации
+sudo ln -s /etc/nginx/sites-available/shift-manager /etc/nginx/sites-enabled/
+sudo nginx -t
+sudo systemctl restart nginx
+```
+
+**6. SSL сертификат (Let's Encrypt)**
+```bash
+sudo apt install certbot python3-certbot-nginx
+sudo certbot --nginx -d yourdomain.com
+```
+
+</details>
+
+#### Вариант 2: Docker Deployment
+
+<details>
+<summary>Развернуть инструкции</summary>
+
+**Использование Docker Compose для полного стека:**
+
+```bash
+# Клонирование
+git clone https://github.com/expertice/shift-maNNager.git
+cd shift-maNNager
+
+# Настройка .env файлов
+cp server/.env.example server/.env
+cp .env.example .env
+
+# Запуск
+docker-compose -f docker-compose.prod.yml up -d
+
+# Применение миграций
+docker-compose exec backend npx prisma migrate deploy
+
+# Просмотр логов
+docker-compose logs -f
+```
+
+</details>
+
+### Обновление приложения
+
+```bash
+# 1. Остановка
+pm2 stop shift-manager-api
+
+# 2. Обновление кода
+git pull origin main
+
+# 3. Установка зависимостей и сборка
+cd server
+npm ci --production=false
+npm run build
+
+cd ..
+npm ci
+npm run build
+
+# 4. Миграции БД (если есть)
+cd server
+npx prisma migrate deploy
+
+# 5. Перезапуск
+pm2 restart shift-manager-api
+```
+
+---
 
 ## 📚 API Документация
-
-Базовая информация о API находится в `documents/API_CONTRACTS.md`.
 
 ### Базовый URL
 ```
 http://localhost:3000/api/v1
 ```
 
-### Авторизация
-Все защищенные endpoints требуют JWT токен в заголовке:
+### Аутентификация
+
+Все защищенные endpoints требуют JWT токен:
+```http
+Authorization: Bearer <your-jwt-token>
 ```
-Authorization: Bearer <token>
+
+### Основные Endpoints
+
+<details>
+<summary><b>Authentication</b></summary>
+
+```http
+POST /api/v1/auth/login
+POST /api/v1/auth/employee-login
+POST /api/v1/auth/logout
+GET  /api/v1/auth/me
 ```
+
+</details>
+
+<details>
+<summary><b>Schedules</b></summary>
+
+```http
+GET    /api/v1/schedules
+POST   /api/v1/schedules
+GET    /api/v1/schedules/:id
+PUT    /api/v1/schedules/:id
+DELETE /api/v1/schedules/:id
+POST   /api/v1/schedules/:id/duplicate
+POST   /api/v1/schedules/:id/publish
+```
+
+</details>
+
+<details>
+<summary><b>Employees</b></summary>
+
+```http
+GET    /api/v1/schedules/:scheduleId/employees
+POST   /api/v1/schedules/:scheduleId/employees
+PUT    /api/v1/employees/:id
+DELETE /api/v1/employees/:id
+POST   /api/v1/employees/:id/generate-password
+```
+
+</details>
+
+<details>
+<summary><b>Shifts</b></summary>
+
+```http
+GET    /api/v1/shifts
+POST   /api/v1/shifts/generate
+PUT    /api/v1/shifts/:id
+DELETE /api/v1/shifts/:id
+GET    /api/v1/shifts/conflicts
+```
+
+</details>
+
+<details>
+<summary><b>Shift Profiles</b></summary>
+
+```http
+GET    /api/v1/shift-profiles
+POST   /api/v1/shift-profiles
+GET    /api/v1/shift-profiles/:id
+PUT    /api/v1/shift-profiles/:id
+DELETE /api/v1/shift-profiles/:id
+POST   /api/v1/shift-profiles/compare
+```
+
+</details>
+
+Полная документация: [`documents/API_CONTRACTS.md`](documents/API_CONTRACTS.md)
+
+---
 
 ## 🧪 Тестирование
 
-### Backend
+### Backend Tests
+
 ```bash
 cd server
-# Установите vitest для тестов (если еще не установлен)
-npm install -D vitest @vitest/ui
 
-# Запустите тесты
-npm run test        # Запустить тесты
-npm run test:watch  # Тесты в watch режиме
-npm run test:ui     # UI интерфейс для тестов
+# Запуск тестов
+npm run test
+
+# Watch режим
+npm run test:watch
+
+# Coverage отчет
+npm run test:coverage
+
+# UI интерфейс для тестов
+npm run test:ui
+```
+
+**Тестируемые модули:**
+- `rosterPatternsService` - управление экземплярами паттернов
+- Контроллеры и middleware
+- Утилиты и сервисы
+
+### Frontend Tests
+
+```bash
+# Запуск тестов
+npm run test
+
+# Watch режим
+npm run test:watch
+
+# Coverage отчет
+npm run test:coverage
+
+# UI интерфейс
+npm run test:ui
 ```
 
 **Тестируемые компоненты:**
-- `rosterPatternsService` - управление экземплярами паттернов (sequence, startIndex, lock/unlock)
+- `rosterCalendar` - утилиты календаря
+- `EmployeePatternRow` - drag-and-drop компоненты
+- React компоненты и hooks
 
-### Frontend
+### E2E Tests (планируется)
+
 ```bash
-npm run test        # Запустить тесты
-npm run test:ui     # UI интерфейс для тестов
-npm run test:coverage # Покрытие кода тестами
+# Установка Playwright
+npm install -D @playwright/test
+
+# Запуск E2E тестов
+npm run test:e2e
 ```
 
-**Тестируемые компоненты:**
-- `rosterCalendar` - утилиты для разбиения периода на месяцы и определения статуса слотов
-- `EmployeePatternRow` - компонент строки сотрудника с drag-and-drop
+---
 
-## 🏗️ Сборка для production
+## 💻 Разработка
 
-### Backend
+### Требования к окружению
+
+- Node.js >= 18.0.0
+- npm >= 9.0.0
+- Git
+- IDE с TypeScript поддержкой (рекомендуется VS Code)
+
+### Настройка окружения для разработки
+
 ```bash
-cd server
-npm run build
-npm start
+# Клонирование
+git clone https://github.com/expertice/shift-maNNager.git
+cd shift-maNNager
+
+# Установка зависимостей
+npm install
+cd server && npm install && cd ..
+
+# Запуск в dev режиме
+npm run dev          # Frontend
+cd server && npm run dev  # Backend
 ```
-
-### Frontend
-```bash
-npm run build
-npm run preview  # Просмотр production сборки
-```
-
-## 📝 Переменные окружения
-
-### Backend (.env в папке server/)
-```env
-DATABASE_URL="postgresql://user:password@localhost:5433/shift_manager?schema=public"
-JWT_SECRET="your-secret-key-change-in-production"
-JWT_EXPIRES_IN="24h"
-CORS_ORIGIN="http://localhost:5173"
-PORT=3000
-NODE_ENV="development"
-```
-
-### Frontend (.env в корне проекта)
-```env
-VITE_API_URL=http://localhost:3000/api/v1
-VITE_WS_URL=http://localhost:3000
-```
-
-## 🤝 Разработка
-
-### Добавление новых функций
-
-1. **Backend**: Добавьте контроллер, сервис и роуты в соответствующих папках
-2. **Frontend**: Создайте компоненты, добавьте API сервисы и страницы
-3. **Типы**: Обновите типы в `src/types/index.ts` и `server/src/types/index.ts`
 
 ### Code Style
 
 Проект использует:
 - **ESLint** для проверки кода
 - **Prettier** для форматирования
-- **TypeScript strict mode** для строгой типизации
+- **TypeScript strict mode**
 
 ```bash
 # Проверка кода
 npm run lint
 
-# Автоматическое исправление
+# Автоисправление
 npm run lint:fix
 
 # Форматирование
 npm run format
+
+# Type checking
+npm run type-check
 ```
 
-## 🐛 Известные ограничения
+### Git Workflow
 
-1. Виртуализация больших таблиц пока не реализована (может быть медленно при >1000 записей)
-2. Офлайн режим с синхронизацией не реализован
-3. Расширенная аналитика (графики, отчеты) не реализована
-4. Перетаскивание смен между сотрудниками не реализовано (только внутри строки)
+```bash
+# Создание feature ветки
+git checkout -b feature/your-feature-name
 
-## 📄 Лицензия
+# Коммит изменений
+git add .
+git commit -m "feat: добавлена новая функция"
 
-Внутренний проект для Норникеля.
+# Push и создание PR
+git push origin feature/your-feature-name
+```
 
-## 👥 Авторы
+**Формат коммитов (Conventional Commits):**
+- `feat:` - новая функция
+- `fix:` - исправление бага
+- `docs:` - изменения в документации
+- `style:` - форматирование, отступы
+- `refactor:` - рефакторинг кода
+- `test:` - добавление тестов
+- `chore:` - обновление зависимостей, конфигурации
 
-Разработано для управления сменными расписаниями.
+### Добавление новых функций
+
+<details>
+<summary>Backend</summary>
+
+1. Создайте контроллер в `server/src/controllers/`
+2. Создайте сервис в `server/src/services/`
+3. Добавьте маршруты в `server/src/routes/`
+4. Обновите типы в `server/src/types/index.ts`
+5. Добавьте тесты
+
+</details>
+
+<details>
+<summary>Frontend</summary>
+
+1. Создайте компонент в `src/components/`
+2. Добавьте API сервис в `src/services/api/`
+3. Обновите типы в `src/types/index.ts`
+4. Добавьте страницу в `src/pages/` (если нужно)
+5. Добавьте тесты
+
+</details>
+
+### Полезные команды
+
+```bash
+# Генерация Prisma типов
+cd server
+npx prisma generate
+
+# Создание новой миграции
+npx prisma migrate dev --name your_migration_name
+
+# Просмотр БД в браузере
+npx prisma studio
+
+# Очистка и rebuild
+npm run clean
+npm run build
+```
 
 ---
 
-**Версия:** 0.2.0  
-**Последнее обновление:** 2025-11-03
+## 🐛 Известные ограничения
 
-### Новое в версии 0.2.0
-- ✨ Помесячная отрисовка ростера (максимум 31 день на таблицу)
-- ✨ Drag-and-Drop для перестановки смен внутри строки сотрудника
-- ✨ Цветовое кодирование типов смен из профилей
-- ✨ Автоматическая валидация минимального покрытия персоналом
-- ✨ Блокировка недоступных слотов (вне периода, пустышки)
+- Виртуализация больших таблиц не реализована (может быть медленно при >1000 записей)
+- Офлайн режим с синхронизацией не реализован
+- Расширенная аналитика (графики, dashboard) в разработке
+- Перетаскивание смен между сотрудниками не реализовано (только внутри строки)
+- Мобильная версия требует оптимизации
 
+---
+
+## 📊 Roadmap
+
+### v0.3.0 (Планируется)
+- [ ] Виртуализация таблиц для больших данных
+- [ ] Расширенная аналитика и отчеты
+- [ ] Экспорт в Excel
+- [ ] Мобильное приложение (React Native)
+- [ ] Уведомления через email/SMS
+
+### v0.4.0 (Планируется)
+- [ ] Интеграция с внешними календарями (Google, Outlook)
+- [ ] API для интеграции с другими системами
+- [ ] Машинное обучение для оптимизации расписаний
+- [ ] Офлайн режим с синхронизацией
+
+---
+
+## 📝 Документация
+
+- [API Контракты](documents/API_CONTRACTS.md)
+- [Руководство разработчика](documents/DEVELOPER_GUIDE.md)
+- [Архитектура Frontend](documents/FRONTEND_ARCH.md)
+- [Структура БД](documents/структура%20БД.md)
+- [Инструкции по развертыванию](DEPLOYMENT.md)
+- [Быстрый старт](QUICK_START.md)
+
+---
+
+## 🤝 Вклад в проект
+
+Проект находится в активной разработке. Для участия:
+
+1. Fork репозиторий
+2. Создайте feature branch (`git checkout -b feature/amazing-feature`)
+3. Commit изменения (`git commit -m 'feat: Add amazing feature'`)
+4. Push в branch (`git push origin feature/amazing-feature`)
+5. Откройте Pull Request
+
+---
+
+## 📄 Лицензия
+
+Внутренний проект. Все права защищены.
+
+---
+
+## 👥 Контакты
+
+**Проект:** Shift Manager  
+**Организация:** Норникель  
+**Repository:** [github.com/expertice/shift-maNNager](https://github.com/expertice/shift-maNNager)
+
+---
+
+<div align="center">
+
+**Версия:** 0.2.0 | **Последнее обновление:** November 2025
+
+Made with ❤️ for efficient shift management
+
+</div>
