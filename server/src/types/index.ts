@@ -79,6 +79,7 @@ export interface EmployeeProfileMetrics {
   shiftsCount: number;
   totalHours: number;
   nightHours: number;
+  shiftTypeCounts?: Record<string, number>; // Количество смен каждого типа (shiftTypeId -> count)
   additionalMetrics?: ProfileComparisonMetric[]; // Для будущего расширения
 }
 
@@ -123,6 +124,7 @@ export interface ProfileComparisonResult {
   employeeCount: number;
   employeeMetrics: EmployeeProfileMetrics[];
   visualizedPatterns: VisualizedPattern[];
+  shiftTypes: ShiftTypeForVisualization[]; // Типы смен для отображения названий
   periodStart: Date;
   periodEnd: Date;
 }
@@ -134,6 +136,7 @@ export interface CompareProfilesRequest {
   profileIds: string[];
   startDate: string; // ISO date
   endDate: string; // ISO date
+  employeeCount?: number;
 }
 
 /**
@@ -142,5 +145,6 @@ export interface CompareProfilesRequest {
 export interface CompareProfilesResponse {
   comparisons: ProfileComparisonResult[];
   maxEmployeeCount: number; // Наибольшее minEmployees среди профилей
+  employeeCount: number; // Фактическое количество сотрудников в расчёте
 }
 

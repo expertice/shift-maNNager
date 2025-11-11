@@ -8,6 +8,7 @@ export interface ModalProps {
   children: React.ReactNode;
   size?: 'sm' | 'md' | 'lg' | 'xl';
   showCloseButton?: boolean;
+  headerActions?: React.ReactNode;
 }
 
 /**
@@ -20,6 +21,7 @@ export const Modal: React.FC<ModalProps> = ({
   children,
   size = 'md',
   showCloseButton = true,
+  headerActions,
 }) => {
   useEffect(() => {
     if (isOpen) {
@@ -69,9 +71,11 @@ export const Modal: React.FC<ModalProps> = ({
           )}
           onClick={(e) => e.stopPropagation()}
         >
-          {(title || showCloseButton) && (
+          {(title || showCloseButton || headerActions) && (
             <div className="flex items-center justify-between p-6 border-b">
               {title && <h3 className="text-lg font-semibold">{title}</h3>}
+              <div className="flex items-center gap-2">
+                {headerActions}
               {showCloseButton && (
                 <button
                   onClick={onClose}
@@ -93,6 +97,7 @@ export const Modal: React.FC<ModalProps> = ({
                   </svg>
                 </button>
               )}
+              </div>
             </div>
           )}
           <div className="p-6">{children}</div>

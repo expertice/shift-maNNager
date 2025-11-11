@@ -3,6 +3,7 @@ import authRoutes from './authRoutes';
 import schedulesRoutes from './schedulesRoutes';
 import shiftProfilesRoutes from './shiftProfilesRoutes';
 import scheduleActionsRoutes from './scheduleActionsRoutes';
+import laborLawComplianceRoutes from './laborLawCompliance';
 
 const router = Router();
 
@@ -22,6 +23,9 @@ router.use('/schedules', schedulesRoutes);
 
 // Schedule actions (generate-shifts, etc.)
 router.use('/schedules/:scheduleId', scheduleActionsRoutes);
+
+// Labor law compliance routes
+router.use('/labor-law', laborLawComplianceRoutes);
 
 // TODO: Добавить остальные роуты
 // router.use('/conflicts', conflictsRouter);

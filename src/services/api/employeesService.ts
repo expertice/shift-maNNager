@@ -6,6 +6,7 @@ export interface CreateEmployeeRequest {
   tabNumber: string;
   birthDate?: string; // ISO date string
   departmentId: string;
+  positionId?: string;
 }
 
 export interface UpdateEmployeeRequest extends Partial<CreateEmployeeRequest> {}
@@ -105,6 +106,24 @@ export const employeesService = {
     );
     if (!response.data.success || !response.data.data) {
       throw new Error(response.data.error || 'Ошибка создания болванчиков');
+    }
+    return response.data.data;
+  },
+
+  /**
+   * Назначить профиль смены сотруднику
+   */
+  assignProfileToEmployee: async (
+    employeeId: string,
+    scheduleId: string,
+    shiftProfileId: string | null
+  ): Promise<Employee> => {
+    const response = await apiClient.put<ApiResponse<Employee>>(
+      `/schedules/${scheduleId}/employees/${employeeId}/assign-profile`,
+      { shiftProfileId }
+    );
+    if (!response.data.success || !response.data.data) {
+      throw new Error(response.data.error || 'Ошибка назначения профиля');
     }
     return response.data.data;
   },

@@ -11,6 +11,7 @@ export interface RosterMonthTableProps {
   periodStart: Date;
   periodEnd: Date;
   onReorder: (employeeId: string, newSeq: (string | null)[]) => void;
+  onEmployeeClick?: (employeeId: string) => void;
   renderChip: (typeId: string | null, idx: number, status: SlotStatus) => React.ReactNode;
 }
 
@@ -23,6 +24,7 @@ export default function RosterMonthTable({
   periodStart,
   periodEnd,
   onReorder,
+  onEmployeeClick,
   renderChip,
 }: RosterMonthTableProps) {
   // Prepare mask for this month
@@ -53,9 +55,14 @@ export default function RosterMonthTable({
               const seq = inst?.sequence ?? [];
               return (
                 <tr key={emp.id} className="hover:bg-gray-50">
-                  <td className="sticky left-0 z-10 bg-white px-6 py-4 whitespace-nowrap border-r">
+                  <td
+                    className={`sticky left-0 z-10 bg-white px-6 py-4 whitespace-nowrap border-r ${
+                      onEmployeeClick ? 'cursor-pointer hover:bg-blue-50 transition-colors' : ''
+                    }`}
+                    onClick={() => onEmployeeClick?.(emp.id)}
+                  >
                     <div className="text-sm font-medium text-gray-900">{emp.fullName}</div>
-                    {emp.tabNumber && <div className="text-sm text-gray-500">{emp.tabNumber}</div>}
+                    {emp.position && <div className="text-xs text-gray-600 font-medium">{emp.position.name}</div>}
                   </td>
                   <td colSpan={maxDays} className="px-2 py-2">
                     {seq.length > 0 ? (

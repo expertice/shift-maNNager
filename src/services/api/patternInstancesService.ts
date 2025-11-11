@@ -8,6 +8,10 @@ export interface RosterPatternInstanceDTO {
   startIndex: number;
   sequence: (string | null)[];
   lockedIndices?: number[] | null;
+  pattern?: {
+    id: string;
+    cycleLength: number;
+  } | null;
 }
 
 export async function getInstances(scheduleId: string): Promise<RosterPatternInstanceDTO[]> {

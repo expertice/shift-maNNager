@@ -18,6 +18,7 @@ async function main() {
   // Очистка данных (опционально, только для разработки)
   if (process.env.NODE_ENV === 'development' && forceReset) {
     console.log('Cleaning existing data...');
+    await prisma.scheduleLaborViolation.deleteMany();
     await prisma.changeHistory.deleteMany();
     await prisma.workHourTracking.deleteMany();
     await prisma.calendarEvent.deleteMany();
@@ -38,6 +39,8 @@ async function main() {
     await prisma.shiftType.deleteMany();
     await prisma.shiftProfile.deleteMany();
     await prisma.user.deleteMany();
+    await prisma.workHoursNorm.deleteMany();
+    await prisma.laborLawSettings.deleteMany();
   }
 
   // Создание суперпользователя
@@ -126,9 +129,10 @@ async function main() {
   });
   console.log('✅ Created vacation rules');
 
-  // Создание глобальных профилей смен (2/2)
+  // Создание профилей смен для расписания (2/2)
   const shiftProfile22 = await prisma.shiftProfile.create({
     data: {
+      scheduleId: schedule.id,
       name: '2/2',
       cycleLength: 4,
       minEmployees: 4,
@@ -205,6 +209,84 @@ async function main() {
     }),
   ]);
   console.log('✅ Created shift patterns');
+
+  // Создание настроек контроля ТК РФ
+  const laborLawSettings = await prisma.laborLawSettings.create({
+    data: {
+      maxWorkingHoursPerShift: 12,
+      minRestBetweenShifts: [
+        { shiftDuration: 12, minRest: 11 },
+        { shiftDuration: 8, minRest: 8 },
+        { shiftDuration: 6, minRest: 8 },
+      ],
+      maxHoursPerWeek: 40,
+      maxHoursPerMonth: 166.67,
+      maxHoursPerQuarter: 500,
+      maxOvertimeHoursPerYear: 120,
+      nightHoursStart: '22:00',
+      nightHoursEnd: '06:00',
+      includeBreaksInNightHours: false,
+      maxConsecutiveWorkDays: 6,
+      maxNightShiftsPerWeek: null,
+      enabledRules: [
+        'excessive_shift_hours',
+        'insufficient_rest',
+        'excessive_weekly_hours',
+        'excessive_monthly_hours',
+        'excessive_quarterly_hours',
+        'excessive_yearly_hours',
+        'excessive_consecutive_days',
+      ],
+      workHoursSource: 'production_calendar',
+      customApiUrl: null,
+      lastSyncAt: null,
+    },
+  });
+  console.log('✅ Created labor law settings');
+
+  // Создание норм часов для 2024 и 2025 годов
+  const currentYear = new Date().getFullYear();
+  await Promise.all([
+    prisma.workHoursNorm.create({
+      data: {
+        year: currentYear,
+        totalHours: 1970, // Примерная норма для 2024
+        isManualOverride: false,
+        source: 'production_calendar',
+        workingDays: 247,
+        weekendDays: 118,
+        holidayDays: 0,
+        metadata: {
+          holidays: ['2024-01-01', '2024-01-02', '2024-01-03', '2024-01-04', '2024-01-05', '2024-01-08', '2024-02-23', '2024-03-08', '2024-05-01', '2024-05-09', '2024-06-12', '2024-11-04'],
+          workingWeekends: [],
+          calculationDetails: {
+            weeklyHours: 40,
+            calculatedFrom: 'production_calendar',
+          },
+        },
+      },
+    }),
+    prisma.workHoursNorm.create({
+      data: {
+        year: currentYear + 1,
+        totalHours: 1979, // Примерная норма для 2025
+        isManualOverride: false,
+        source: 'production_calendar',
+        workingDays: 248,
+        weekendDays: 117,
+        holidayDays: 0,
+        metadata: {
+          holidays: ['2025-01-01', '2025-01-02', '2025-01-03', '2025-01-06', '2025-01-07', '2025-01-08', '2025-02-23', '2025-03-08', '2025-05-01', '2025-05-09', '2025-06-12', '2025-11-04'],
+          workingWeekends: [],
+          calculationDetails: {
+            weeklyHours: 40,
+            calculatedFrom: 'production_calendar',
+          },
+        },
+      },
+    }),
+  ]);
+  console.log('✅ Created work hours norms for current and next year');
 
   console.log('🎉 Seed completed successfully!');
 }

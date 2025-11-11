@@ -133,7 +133,7 @@ export async function updateSchedule(
 ): Promise<void> {
   try {
     const { id } = req.params;
-    const { name, startDate, endDate, status } = req.body;
+    const { name, startDate, endDate, status, reportingPeriod, patternStartOffset } = req.body;
 
     // Подготавливаем данные для обновления
     const updateData: schedulesService.UpdateScheduleData = {};
@@ -152,6 +152,14 @@ export async function updateSchedule(
 
     if (status !== undefined) {
       updateData.status = status as ScheduleStatus;
+    }
+
+    if (reportingPeriod !== undefined) {
+      updateData.reportingPeriod = reportingPeriod;
+    }
+
+    if (patternStartOffset !== undefined) {
+      updateData.patternStartOffset = patternStartOffset;
     }
 
     const schedule = await schedulesService.updateSchedule(id, updateData, req.user?.id);

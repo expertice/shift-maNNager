@@ -22,6 +22,7 @@ export const EditPeriodModal: React.FC<EditPeriodModalProps> = ({
   const queryClient = useQueryClient();
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
+  const [useYearlyReporting, setUseYearlyReporting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   // Инициализация дат при открытии модального окна
@@ -29,12 +30,18 @@ export const EditPeriodModal: React.FC<EditPeriodModalProps> = ({
     if (isOpen && schedule) {
       setStartDate(format(new Date(schedule.startDate), 'yyyy-MM-dd'));
       setEndDate(format(new Date(schedule.endDate), 'yyyy-MM-dd'));
+      // Если reportingPeriod не установлен, по умолчанию 'month' (флажок выключен)
+      setUseYearlyReporting(schedule.reportingPeriod === 'year');
       setError(null);
     }
   }, [isOpen, schedule]);
 
   const updateMutation = useMutation({
-    mutationFn: (data: { startDate: string; endDate: string }) =>
+    mutationFn: (data: { 
+      startDate: string; 
+      endDate: string;
+      reportingPeriod?: 'year' | 'month';
+    }) =>
       schedulesService.updateSchedule(schedule.id, data),
     onSuccess: () => {
       // Инвалидируем кэш расписания и связанных данных
@@ -68,6 +75,7 @@ export const EditPeriodModal: React.FC<EditPeriodModalProps> = ({
     updateMutation.mutate({
       startDate,
       endDate,
+      reportingPeriod: useYearlyReporting ? 'year' : 'month',
     });
   };
 
@@ -82,22 +90,40 @@ export const EditPeriodModal: React.FC<EditPeriodModalProps> = ({
       size="md"
     >
       <form onSubmit={handleSubmit} className="space-y-4">
-        <div className="grid grid-cols-2 gap-4">
-          <Input
-            label="Дата начала"
-            type="date"
-            value={startDate}
-            onChange={(e) => setStartDate(e.target.value)}
-            required
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-2">
+            Период расписания
+          </label>
+          <div className="grid grid-cols-2 gap-4">
+            <Input
+              label="От"
+              type="date"
+              value={startDate}
+              onChange={(e) => setStartDate(e.target.value)}
+              required
+            />
+            <Input
+              label="До"
+              type="date"
+              value={endDate}
+              onChange={(e) => setEndDate(e.target.value)}
+              min={startDate}
+              required
+            />
+          </div>
+        </div>
+
+        <div className="flex items-center space-x-2">
+          <input
+            type="checkbox"
+            id="yearlyReporting"
+            checked={useYearlyReporting}
+            onChange={(e) => setUseYearlyReporting(e.target.checked)}
+            className="w-4 h-4 text-primary border-gray-300 rounded focus:ring-primary"
           />
-          <Input
-            label="Дата окончания"
-            type="date"
-            value={endDate}
-            onChange={(e) => setEndDate(e.target.value)}
-            min={startDate}
-            required
-          />
+          <label htmlFor="yearlyReporting" className="text-sm text-gray-700">
+            Годовой отчётный период (без контроля недельных/месячных лимитов)
+          </label>
         </div>
 
         {error && (

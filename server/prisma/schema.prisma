@@ -28,19 +28,25 @@ model User {
 
 /// Схемы планирования
 model Schedule {
-  id          String         @id @default(uuid())
-  ownerUserId String         @map("owner_user_id")
-  name        String
-  startDate   DateTime       @map("start_date")
-  endDate     DateTime       @map("end_date")
-  status      ScheduleStatus
-  createdAt   DateTime       @default(now()) @map("created_at")
-  updatedAt   DateTime       @updatedAt @map("updated_at")
+  id                      String                 @id @default(uuid())
+  ownerUserId             String                 @map("owner_user_id")
+  name                    String
+  startDate               DateTime               @map("start_date")
+  endDate                 DateTime               @map("end_date")
+  status                  ScheduleStatus
+  reportingPeriod         ReportingPeriod?       @map("reporting_period") @default(month)
+  allowOvertimeWeekly     Boolean                @map("allow_overtime_weekly") @default(false)
+  allowOvertimeMonthly    Boolean                @map("allow_overtime_monthly") @default(false)
+  allowOvertimeQuarterly  Boolean                @map("allow_overtime_quarterly") @default(false)
+  patternStartOffset      Int?                   @map("pattern_start_offset") @default(0)
+  createdAt               DateTime               @default(now()) @map("created_at")
+  updatedAt               DateTime               @updatedAt @map("updated_at")
 
   // Relations
-  owner                  User                      @relation("ScheduleOwner", fields: [ownerUserId], references: [id])
+  owner                  User                       @relation("ScheduleOwner", fields: [ownerUserId], references: [id])
   permissions            SchedulePermission[]
   departments            Department[]
+  positions              Position[]
   employees              Employee[]
   shifts                 DailyShift[]
   conflicts              Conflict[]
@@ -51,8 +57,17 @@ model Schedule {
   changeHistory          ChangeHistory[]
   rosterPatternInstances RosterPatternInstance[]
   shiftSwapRequests      ShiftSwapRequest[]
+  shiftProfiles          ShiftProfile[]
+  laborViolations        ScheduleLaborViolation[]
 
   @@map("schedules")
+}
+
+enum ReportingPeriod {
+  week
+  month
+  quarter
+  year
 }
 
 enum ScheduleStatus {
@@ -96,7 +111,22 @@ model Department {
   schedule  Schedule   @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
   employees Employee[]
 
+  @@unique([scheduleId, name])
   @@map("departments")
+}
+
+/// Должности в схеме
+model Position {
+  id         String @id @default(uuid())
+  scheduleId String @map("schedule_id")
+  name       String
+
+  // Relations
+  schedule  Schedule   @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
+  employees Employee[]
+
+  @@unique([scheduleId, name])
+  @@map("positions")
 }
 
 /// Сотрудники в схеме
@@ -104,6 +134,8 @@ model Employee {
   id             String    @id @default(uuid())
   scheduleId     String    @map("schedule_id")
   departmentId   String?   @map("department_id")
+  positionId     String?   @map("position_id")
+  shiftProfileId String?   @map("shift_profile_id")
   fullName       String    @map("full_name")
   tabNumber      String    @map("tab_number")
   birthDate      DateTime? @map("birth_date")
@@ -114,8 +146,10 @@ model Employee {
   createdAt      DateTime  @default(now()) @map("created_at")
 
   // Relations
-  schedule               Schedule                  @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
-  department             Department?               @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+  schedule               Schedule                   @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
+  department             Department?                @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+  position               Position?                  @relation(fields: [positionId], references: [id], onDelete: Cascade)
+  shiftProfile           ShiftProfile?              @relation(fields: [shiftProfileId], references: [id], onDelete: SetNull)
   restrictions           EmployeeRestriction[]
   shifts                 DailyShift[]
   vacations              Vacation[]
@@ -126,10 +160,13 @@ model Employee {
   workHourTracking       WorkHourTracking[]
   changeHistory          ChangeHistory[]
   rosterPatternInstances RosterPatternInstance[]
-  swapRequestsInitiator  ShiftSwapRequest[]        @relation("SwapRequestInitiator")
-  swapRequestsFrom       ShiftSwapRequest[]        @relation("SwapRequestFrom")
-  swapRequestsTo         ShiftSwapRequest[]        @relation("SwapRequestTo")
+  swapRequestsInitiator  ShiftSwapRequest[]         @relation("SwapRequestInitiator")
+  swapRequestsFrom       ShiftSwapRequest[]         @relation("SwapRequestFrom")
+  swapRequestsTo         ShiftSwapRequest[]         @relation("SwapRequestTo")
+  laborViolations        ScheduleLaborViolation[]
 
+  @@unique([scheduleId, tabNumber])
+  @@unique([scheduleId, loginId])
   @@map("employees")
 }
 
@@ -154,18 +191,21 @@ enum EmployeeRestrictionType {
 
 // ============ Профили смен и типы смен ============
 
-/// Профили смен (глобальные шаблоны)
+/// Профили смен (уникальные для каждого расписания)
 model ShiftProfile {
   id           String  @id @default(uuid())
+  scheduleId   String  @map("schedule_id")
   name         String
   cycleLength  Int     @map("cycle_length")
   minEmployees Int     @map("min_employees")
   description  String?
 
   // Relations
+  schedule         Schedule                    @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
   shiftTypes       ShiftType[]
   patterns         ShiftProfilePattern[]
   shiftAssignments ScheduleShiftAssignment[]
+  employees        Employee[]
 
   @@map("shift_profiles")
 }
@@ -251,10 +291,11 @@ model DailyShift {
   updatedAt      DateTime    @updatedAt @map("updated_at")
 
   // Relations
-  schedule  Schedule   @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
-  employee  Employee   @relation(fields: [employeeId], references: [id], onDelete: Cascade)
-  shiftType ShiftType? @relation(fields: [shiftTypeId], references: [id], onDelete: SetNull)
-  conflicts Conflict[]
+  schedule        Schedule                   @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
+  employee        Employee                   @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  shiftType       ShiftType?                 @relation(fields: [shiftTypeId], references: [id], onDelete: SetNull)
+  conflicts       Conflict[]
+  laborViolations ScheduleLaborViolation[]
 
   @@unique([scheduleId, employeeId, date])
   @@map("daily_shifts")
@@ -516,4 +557,91 @@ enum ChangeType {
   create
   update
   delete
+}
+
+// ============ Проверка соответствия ТК РФ ============
+
+/// Настройки контроля режима труда и отдыха ТК РФ
+model LaborLawSettings {
+  id                        String   @id @default(uuid())
+  maxWorkingHoursPerShift   Decimal  @map("max_working_hours_per_shift") @db.Decimal(5, 2) @default(12)
+  minRestBetweenShifts      Json     @map("min_rest_between_shifts") // [{shiftDuration: 12, minRest: 11}, ...]
+  maxHoursPerWeek           Decimal  @map("max_hours_per_week") @db.Decimal(5, 2) @default(40)
+  maxHoursPerMonth          Decimal  @map("max_hours_per_month") @db.Decimal(6, 2) @default(166.67)
+  maxHoursPerQuarter        Decimal  @map("max_hours_per_quarter") @db.Decimal(6, 2) @default(500)
+  maxOvertimeHoursPerYear   Decimal  @map("max_overtime_hours_per_year") @db.Decimal(6, 2) @default(120)
+  nightHoursStart           String   @map("night_hours_start") @default("22:00")
+  nightHoursEnd             String   @map("night_hours_end") @default("06:00")
+  includeBreaksInNightHours Boolean  @map("include_breaks_in_night_hours") @default(false)
+  maxConsecutiveWorkDays    Int      @map("max_consecutive_work_days") @default(6)
+  maxNightShiftsPerWeek     Int?     @map("max_night_shifts_per_week")
+  enabledRules              Json     @map("enabled_rules") // Массив правил для проверки
+  workHoursSource           String   @map("work_hours_source") @default("production_calendar") // manual, production_calendar, consultant_ru, custom_api
+  customApiUrl              String?  @map("custom_api_url")
+  lastSyncAt                DateTime? @map("last_sync_at")
+  createdAt                 DateTime @default(now()) @map("created_at")
+  updatedAt                 DateTime @updatedAt @map("updated_at")
+
+  @@map("labor_law_settings")
+}
+
+/// Нормы рабочего времени по годам
+model WorkHoursNorm {
+  id               String   @id @default(uuid())
+  year             Int      @unique
+  totalHours       Decimal  @map("total_hours") @db.Decimal(7, 2)
+  isManualOverride Boolean  @map("is_manual_override") @default(false)
+  source           String   @default("production_calendar") // production_calendar, manual, consultant_ru, custom_api
+  workingDays      Int?     @map("working_days")
+  weekendDays      Int?     @map("weekend_days")
+  holidayDays      Int?     @map("holiday_days")
+  metadata         Json?    // holidays, workingWeekends, calculationDetails
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+
+  @@map("work_hours_norms")
+}
+
+/// Нарушения требований ТК РФ в расписаниях
+model ScheduleLaborViolation {
+  id              String                @id @default(uuid())
+  scheduleId      String                @map("schedule_id")
+  employeeId      String?               @map("employee_id")
+  violationType   LaborViolationType    @map("violation_type")
+  severity        ViolationSeverity
+  dateFrom        DateTime              @map("date_from") @db.Date
+  dateTo          DateTime?             @map("date_to") @db.Date
+  dailyShiftId    String?               @map("daily_shift_id")
+  actualValue     Decimal               @map("actual_value") @db.Decimal(8, 2)
+  expectedValue   Decimal               @map("expected_value") @db.Decimal(8, 2)
+  articleTkRf     String                @map("article_tk_rf")
+  description     String                @db.Text
+  resolved        Boolean               @default(false)
+  resolutionNotes String?               @map("resolution_notes") @db.Text
+  detectedAt      DateTime              @default(now()) @map("detected_at")
+  updatedAt       DateTime              @updatedAt @map("updated_at")
+
+  // Relations
+  schedule   Schedule    @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
+  employee   Employee?   @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  dailyShift DailyShift? @relation(fields: [dailyShiftId], references: [id], onDelete: Cascade)
+
+  @@map("schedule_labor_violations")
+}
+
+enum LaborViolationType {
+  excessive_shift_hours
+  insufficient_rest
+  excessive_weekly_hours
+  excessive_monthly_hours
+  excessive_quarterly_hours
+  excessive_yearly_hours
+  excessive_consecutive_days
+  excessive_night_shifts
+}
+
+enum ViolationSeverity {
+  critical
+  warning
+  info
 }

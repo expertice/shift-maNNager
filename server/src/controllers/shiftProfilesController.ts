@@ -5,16 +5,27 @@ import { ShiftProfile } from '@prisma/client';
 import { parseISO } from 'date-fns';
 
 /**
- * GET /api/v1/shift-profiles
- * Получить все профили смен (глобальные)
+ * GET /api/v1/shift-profiles?scheduleId=xxx
+ * Получить все профили смен для конкретного расписания
  */
 export async function getShiftProfiles(
-  _req: AuthRequest,
+  req: AuthRequest,
   res: Response<ApiResponse<ShiftProfile[]>>,
   next: NextFunction
 ): Promise<void> {
   try {
-    const profiles = await shiftProfilesService.getAllShiftProfiles();
+    const { scheduleId } = req.query;
+
+    if (!scheduleId || typeof scheduleId !== 'string') {
+      const error: ApiError = {
+        status: 400,
+        code: 'VALIDATION_ERROR',
+        message: 'scheduleId query parameter is required',
+      };
+      return next(error);
+    }
+
+    const profiles = await shiftProfilesService.getShiftProfilesBySchedule(scheduleId);
 
     res.json({
       success: true,
@@ -26,7 +37,7 @@ export async function getShiftProfiles(
 }
 
 /**
- * GET /api/v1/shift-profiles/:id
+ * GET /api/v1/shift-profiles/:id?scheduleId=xxx
  * Получить профиль смены с деталями
  */
 export async function getShiftProfileById(
@@ -36,7 +47,13 @@ export async function getShiftProfileById(
 ): Promise<void> {
   try {
     const { id } = req.params;
-    const profile = await shiftProfilesService.getShiftProfileById(id);
+    const { scheduleId } = req.query;
+
+    // scheduleId опциональный - если указан, проверяем принадлежность
+    const profile = await shiftProfilesService.getShiftProfileById(
+      id,
+      scheduleId as string | undefined
+    );
 
     if (!profile) {
       const error: ApiError = {
@@ -69,6 +86,15 @@ export async function createShiftProfile(
     const createData = req.body;
 
     // Валидация основных полей
+    if (!createData.scheduleId) {
+      const error: ApiError = {
+        status: 400,
+        code: 'VALIDATION_ERROR',
+        message: 'scheduleId is required',
+      };
+      return next(error);
+    }
+
     if (!createData.name) {
       const error: ApiError = {
         status: 400,
@@ -130,6 +156,15 @@ export async function updateShiftProfile(
     const updateData = req.body;
 
     // Валидация основных полей
+    if (!updateData.scheduleId) {
+      const error: ApiError = {
+        status: 400,
+        code: 'VALIDATION_ERROR',
+        message: 'scheduleId is required',
+      };
+      return next(error);
+    }
+
     if (!updateData.name) {
       const error: ApiError = {
         status: 400,
@@ -238,7 +273,7 @@ export async function compareProfilesHandler(
   next: NextFunction
 ): Promise<void> {
   try {
-    const { profileIds, startDate, endDate } = req.body;
+    const { profileIds, startDate, endDate, employeeCount } = req.body;
 
     // Валидация входных данных
     if (!profileIds || !Array.isArray(profileIds) || profileIds.length < 2) {
@@ -257,6 +292,20 @@ export async function compareProfilesHandler(
         message: 'Необходимо указать период сравнения (startDate и endDate)',
       };
       return next(error);
+    }
+
+    let requestedEmployeeCount: number | undefined;
+    if (employeeCount !== undefined) {
+      const parsedEmployeeCount = Number(employeeCount);
+      if (!Number.isFinite(parsedEmployeeCount) || parsedEmployeeCount < 1) {
+        const error: ApiError = {
+          status: 400,
+          code: 'VALIDATION_ERROR',
+          message: 'Количество сотрудников должно быть положительным числом',
+        };
+        return next(error);
+      }
+      requestedEmployeeCount = Math.floor(parsedEmployeeCount);
     }
 
     // Парсим даты
@@ -286,7 +335,8 @@ export async function compareProfilesHandler(
     const comparisonResult = await shiftProfilesService.compareProfiles(
       profileIds,
       start,
-      end
+      end,
+      requestedEmployeeCount
     );
 
     res.json({
@@ -309,8 +359,18 @@ export async function deleteShiftProfileHandler(
 ): Promise<void> {
   try {
     const { id } = req.params;
+    const { scheduleId } = req.query;
 
-    await shiftProfilesService.deleteShiftProfile(id);
+    if (!scheduleId || typeof scheduleId !== 'string') {
+      const error: ApiError = {
+        status: 400,
+        code: 'VALIDATION_ERROR',
+        message: 'scheduleId query parameter is required',
+      };
+      return next(error);
+    }
+
+    await shiftProfilesService.deleteShiftProfile(id, scheduleId);
 
     res.json({
       success: true,
@@ -338,6 +398,97 @@ export async function cloneShiftProfileHandler(
     res.status(201).json({
       success: true,
       data: clonedProfile,
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * POST /api/v1/shift-profiles/update-pattern-offset
+ * Обновить смещение паттерна для всех экземпляров в расписании
+ */
+export async function updatePatternOffsetHandler(
+  req: AuthRequest,
+  res: Response<ApiResponse<{ message: string }>>,
+  next: NextFunction
+): Promise<void> {
+  try {
+    const { scheduleId, offsetDelta } = req.body;
+
+    if (!scheduleId || typeof scheduleId !== 'string') {
+      const error: ApiError = {
+        status: 400,
+        code: 'VALIDATION_ERROR',
+        message: 'scheduleId is required',
+      };
+      return next(error);
+    }
+
+    if (offsetDelta === undefined || typeof offsetDelta !== 'number') {
+      const error: ApiError = {
+        status: 400,
+        code: 'VALIDATION_ERROR',
+        message: 'offsetDelta is required and must be a number',
+      };
+      return next(error);
+    }
+
+    await shiftProfilesService.updatePatternOffset(scheduleId, offsetDelta);
+
+    res.json({
+      success: true,
+      data: { message: 'Pattern offset updated successfully' },
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * POST /api/v1/shift-profiles/update-employee-pattern-offset
+ * Обновить смещение паттерна для конкретного сотрудника
+ */
+export async function updateEmployeePatternOffsetHandler(
+  req: AuthRequest,
+  res: Response<ApiResponse<{ message: string }>>,
+  next: NextFunction
+): Promise<void> {
+  try {
+    const { scheduleId, employeeId, offsetDelta } = req.body;
+
+    if (!scheduleId || typeof scheduleId !== 'string') {
+      const error: ApiError = {
+        status: 400,
+        code: 'VALIDATION_ERROR',
+        message: 'scheduleId is required',
+      };
+      return next(error);
+    }
+
+    if (!employeeId || typeof employeeId !== 'string') {
+      const error: ApiError = {
+        status: 400,
+        code: 'VALIDATION_ERROR',
+        message: 'employeeId is required',
+      };
+      return next(error);
+    }
+
+    if (offsetDelta === undefined || typeof offsetDelta !== 'number') {
+      const error: ApiError = {
+        status: 400,
+        code: 'VALIDATION_ERROR',
+        message: 'offsetDelta is required and must be a number',
+      };
+      return next(error);
+    }
+
+    await shiftProfilesService.updateEmployeePatternOffset(scheduleId, employeeId, offsetDelta);
+
+    res.json({
+      success: true,
+      data: { message: 'Employee pattern offset updated successfully' },
     });
   } catch (error) {
     next(error);

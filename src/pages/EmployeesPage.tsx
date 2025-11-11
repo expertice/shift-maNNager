@@ -2,15 +2,9 @@ import React, { useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { MainLayout, SidebarIcons } from '@components/layout';
-import {
-  Button,
-  Card,
-  Spinner,
-  Modal,
-  Input,
-  Select,
-} from '@components/common';
-import { employeesService, schedulesService } from '@services/api';
+import { Button, Card, Spinner } from '@components/common';
+import { EditEmployeeModal } from '@components/employees';
+import { employeesService, schedulesService, positionsService } from '@services/api';
 import { Employee } from '@types';
 
 /**
@@ -21,6 +15,7 @@ export default function EmployeesPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
+  const [editingEmployeeId, setEditingEmployeeId] = useState<string | null>(null);
 
   if (!scheduleId) {
     return <div>Ошибка: не указан ID расписания</div>;
@@ -40,17 +35,43 @@ export default function EmployeesPage() {
     enabled: !!scheduleId,
   });
 
+  // Загрузка должностей
+  const { data: positions } = useQuery({
+    queryKey: ['positions', scheduleId],
+    queryFn: () => positionsService.getPositions(scheduleId),
+    enabled: !!scheduleId,
+  });
+
   // Создание сотрудника
   const createMutation = useMutation({
     mutationFn: (data: {
       fullName: string;
       tabNumber: string;
+      positionId?: string;
       birthDate?: string;
       departmentId: string;
     }) => employeesService.createEmployee(scheduleId, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['employees', scheduleId] });
       setIsCreateModalOpen(false);
+    },
+  });
+
+  // Обновление сотрудника
+  const updateMutation = useMutation({
+    mutationFn: (data: {
+      fullName: string;
+      tabNumber: string;
+      positionId?: string;
+      birthDate?: string;
+      departmentId: string;
+    }) => {
+      if (!editingEmployeeId) throw new Error('No employee selected');
+      return employeesService.updateEmployee(scheduleId, editingEmployeeId, data);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['employees', scheduleId] });
+      setEditingEmployeeId(null);
     },
   });
 
@@ -119,11 +140,21 @@ export default function EmployeesPage() {
                 <div className="mb-3">
                   <h3 className="text-lg font-semibold">{employee.fullName}</h3>
                   <p className="text-sm text-gray-600">Табельный №: {employee.tabNumber}</p>
+                  {employee.position && (
+                    <p className="text-sm text-gray-600 font-medium">{employee.position.name}</p>
+                  )}
                   {employee.department && (
                     <p className="text-sm text-gray-500">{employee.department.name}</p>
                   )}
                 </div>
                 <div className="flex space-x-2">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => setEditingEmployeeId(employee.id)}
+                  >
+                    Редактировать
+                  </Button>
                   <Button
                     size="sm"
                     variant="outline"
@@ -154,101 +185,29 @@ export default function EmployeesPage() {
         )}
 
         {/* Модальное окно создания сотрудника */}
-        <EmployeeFormModal
+        <EditEmployeeModal
           isOpen={isCreateModalOpen}
           onClose={() => setIsCreateModalOpen(false)}
-          onSubmit={(data) => createMutation.mutate(data)}
-          isLoading={createMutation.isPending}
+          onSave={(data) => createMutation.mutateAsync(data)}
+          employee={null}
           departments={schedule?.departments || []}
+          positions={positions || []}
+          scheduleId={scheduleId}
+          isLoading={createMutation.isPending}
+        />
+
+        {/* Модальное окно редактирования сотрудника */}
+        <EditEmployeeModal
+          isOpen={!!editingEmployeeId}
+          onClose={() => setEditingEmployeeId(null)}
+          onSave={(data) => updateMutation.mutateAsync(data)}
+          employee={editingEmployeeId ? employees?.find(e => e.id === editingEmployeeId) : null}
+          departments={schedule?.departments || []}
+          positions={positions || []}
+          scheduleId={scheduleId}
+          isLoading={updateMutation.isPending}
         />
       </div>
     </MainLayout>
-  );
-}
-
-interface EmployeeFormModalProps {
-  isOpen: boolean;
-  onClose: () => void;
-  onSubmit: (data: {
-    fullName: string;
-    tabNumber: string;
-    birthDate?: string;
-    departmentId: string;
-  }) => void;
-  isLoading: boolean;
-  departments: Array<{ id: string; name: string }>;
-}
-
-function EmployeeFormModal({
-  isOpen,
-  onClose,
-  onSubmit,
-  isLoading,
-  departments,
-}: EmployeeFormModalProps) {
-  const [fullName, setFullName] = useState('');
-  const [tabNumber, setTabNumber] = useState('');
-  const [birthDate, setBirthDate] = useState('');
-  const [departmentId, setDepartmentId] = useState('');
-
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    onSubmit({
-      fullName,
-      tabNumber,
-      birthDate: birthDate || undefined,
-      departmentId,
-    });
-    // Сброс формы
-    setFullName('');
-    setTabNumber('');
-    setBirthDate('');
-    setDepartmentId('');
-  };
-
-  return (
-    <Modal isOpen={isOpen} onClose={onClose} title="Добавить сотрудника">
-      <form onSubmit={handleSubmit} className="space-y-4">
-        <Input
-          label="ФИО"
-          value={fullName}
-          onChange={(e) => setFullName(e.target.value)}
-          required
-          placeholder="Иванов Иван Иванович"
-        />
-        <Input
-          label="Табельный номер"
-          value={tabNumber}
-          onChange={(e) => setTabNumber(e.target.value)}
-          required
-          placeholder="12345"
-        />
-        <Input
-          label="Дата рождения"
-          type="date"
-          value={birthDate}
-          onChange={(e) => setBirthDate(e.target.value)}
-        />
-        <Select
-          label="Отдел"
-          value={departmentId}
-          onChange={(e) => setDepartmentId(e.target.value)}
-          required
-          options={departments.map((dept) => ({
-            value: dept.id,
-            label: dept.name,
-          }))}
-          placeholder="Выберите отдел"
-        />
-        <div className="flex justify-end space-x-2">
-          <Button variant="outline" onClick={onClose}>
-            Отмена
-          </Button>
-          <Button type="submit" isLoading={isLoading}>
-            Добавить
-          </Button>
-        </div>
-      </form>
-    </Modal>
   );
 }

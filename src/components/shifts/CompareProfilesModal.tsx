@@ -1,13 +1,14 @@
-import React, { useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { format } from 'date-fns';
 import { Modal, Button, Input, Spinner } from '@components/common';
 import { shiftProfilesService } from '@services/api';
-import { CompareProfilesResponse } from '@types';
+import { CompareProfilesResponse, ShiftProfile } from '@types';
 
 export interface CompareProfilesModalProps {
   isOpen: boolean;
   onClose: () => void;
   selectedProfileIds: string[];
+  selectedProfiles: ShiftProfile[];
   scheduleStartDate: Date;
   scheduleEndDate: Date;
 }
@@ -31,6 +32,7 @@ export const CompareProfilesModal: React.FC<CompareProfilesModalProps> = ({
   isOpen,
   onClose,
   selectedProfileIds,
+  selectedProfiles,
   scheduleStartDate,
   scheduleEndDate,
 }) => {
@@ -39,19 +41,43 @@ export const CompareProfilesModal: React.FC<CompareProfilesModalProps> = ({
   const [isLoading, setIsLoading] = useState(false);
   const [comparisonResult, setComparisonResult] = useState<CompareProfilesResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const minRequiredEmployees = useMemo(
+    () => selectedProfiles.reduce((max, profile) => Math.max(max, profile.minEmployees), 0),
+    [selectedProfiles]
+  );
+  const [employeeCount, setEmployeeCount] = useState<number>(() => Math.max(minRequiredEmployees, 0));
+
+  useEffect(() => {
+    if (!isOpen) {
+      setEmployeeCount(Math.max(minRequiredEmployees, 0));
+      return;
+    }
+
+    setEmployeeCount((prev) => {
+      const normalizedPrev = Number.isFinite(prev) ? prev : 0;
+      return Math.max(minRequiredEmployees, normalizedPrev || minRequiredEmployees);
+    });
+  }, [minRequiredEmployees, isOpen]);
 
   const handleCompare = async () => {
     setError(null);
     setIsLoading(true);
 
     try {
+      const normalizedEmployeeCount = Math.max(
+        minRequiredEmployees,
+        Math.floor(Number.isFinite(employeeCount) ? employeeCount : minRequiredEmployees)
+      );
+
       const result = await shiftProfilesService.compareProfiles({
         profileIds: selectedProfileIds,
         startDate,
         endDate,
+        employeeCount: normalizedEmployeeCount,
       });
 
       setComparisonResult(result);
+      setEmployeeCount(normalizedEmployeeCount);
     } catch (err: any) {
       setError(err.message || 'Ошибка при сравнении профилей');
       setComparisonResult(null);
@@ -63,6 +89,7 @@ export const CompareProfilesModal: React.FC<CompareProfilesModalProps> = ({
   const handleClose = () => {
     setComparisonResult(null);
     setError(null);
+    setEmployeeCount(Math.max(minRequiredEmployees, 0));
     onClose();
   };
 
@@ -71,12 +98,57 @@ export const CompareProfilesModal: React.FC<CompareProfilesModalProps> = ({
 
     try {
       const { exportComparisonToPDF } = await import('@utils/pdfExport');
-      await exportComparisonToPDF(comparisonResult.comparisons);
+      await exportComparisonToPDF(
+        comparisonResult.comparisons,
+        comparisonResult.maxEmployeeCount,
+        comparisonResult.employeeCount
+      );
       alert('PDF экспортирован успешно!');
     } catch (err: any) {
       alert(`Ошибка экспорта PDF: ${err.message}`);
     }
   };
+
+  const globalMaxCycleLength = useMemo(() => {
+    if (!comparisonResult) {
+      return 0;
+    }
+
+    return comparisonResult.comparisons.reduce((maxCycle, comparison) => {
+      const comparisonMax = comparison.visualizedPatterns.reduce(
+        (innerMax, pattern) => Math.max(innerMax, pattern.cycleLength),
+        0
+      );
+      return Math.max(maxCycle, comparisonMax);
+    }, 0);
+  }, [comparisonResult]);
+
+  const patternsCache = useMemo(() => {
+    type PatternInfo = {
+      sorted: CompareProfilesResponse['comparisons'][number]['visualizedPatterns'];
+      byNumber: Map<
+        number,
+        CompareProfilesResponse['comparisons'][number]['visualizedPatterns'][number]
+      >;
+    };
+
+    const cache = new Map<string, PatternInfo>();
+
+    if (!comparisonResult) {
+      return cache;
+    }
+
+    comparisonResult.comparisons.forEach((comparison) => {
+      const sorted = [...comparison.visualizedPatterns].sort(
+        (a, b) => a.patternNumber - b.patternNumber
+      );
+      const byNumber = new Map(sorted.map((pattern) => [pattern.patternNumber, pattern]));
+
+      cache.set(comparison.profile.id, { sorted, byNumber });
+    });
+
+    return cache;
+  }, [comparisonResult]);
 
   return (
     <Modal isOpen={isOpen} onClose={handleClose} size="xl">
@@ -117,6 +189,28 @@ export const CompareProfilesModal: React.FC<CompareProfilesModalProps> = ({
               </div>
             </div>
 
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Количество сотрудников
+              </label>
+              <Input
+                type="number"
+                min={minRequiredEmployees}
+                value={Number.isFinite(employeeCount) ? employeeCount : ''}
+                onChange={(e) => {
+                  const value = Number(e.target.value);
+                  if (Number.isNaN(value)) {
+                    setEmployeeCount(minRequiredEmployees);
+                  } else {
+                    setEmployeeCount(value);
+                  }
+                }}
+              />
+              <p className="text-xs text-gray-500 mt-1">
+                Минимум для выбранных профилей: {minRequiredEmployees}
+              </p>
+            </div>
+
             {error && (
               <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded">
                 {error}
@@ -130,7 +224,13 @@ export const CompareProfilesModal: React.FC<CompareProfilesModalProps> = ({
               <Button
                 onClick={handleCompare}
                 variant="primary"
-                disabled={isLoading || !startDate || !endDate}
+                disabled={
+                  isLoading ||
+                  !startDate ||
+                  !endDate ||
+                  minRequiredEmployees === 0 ||
+                  (Number.isFinite(employeeCount) && employeeCount < minRequiredEmployees)
+                }
               >
                 {isLoading ? (
                   <>
@@ -153,8 +253,11 @@ export const CompareProfilesModal: React.FC<CompareProfilesModalProps> = ({
                 {format(new Date(endDate), 'dd.MM.yyyy')}
               </p>
               <p className="text-sm text-blue-800 mt-1">
-                <strong>Максимальное количество сотрудников:</strong>{' '}
+                <strong>Минимум по выбранным профилям:</strong>{' '}
                 {comparisonResult.maxEmployeeCount}
+              </p>
+              <p className="text-sm text-blue-800 mt-1">
+                <strong>Использовано сотрудников:</strong> {comparisonResult.employeeCount}
               </p>
             </div>
 
@@ -231,49 +334,151 @@ export const CompareProfilesModal: React.FC<CompareProfilesModalProps> = ({
                       </table>
                     </div>
 
-                    <h4 className="font-semibold text-gray-700 text-xs mb-2">Паттерны:</h4>
-                    <div className="space-y-2">
-                      {comparison.visualizedPatterns.map((pattern) => (
-                        <div key={pattern.patternNumber} className="border border-gray-200 rounded p-2">
-                          <div className="text-xs text-gray-600 mb-1">
-                            Паттерн {pattern.patternNumber}
-                          </div>
-                          <div className="flex flex-wrap gap-1">
-                            {pattern.sequence.slice(0, Math.min(pattern.cycleLength + 2, pattern.sequence.length)).map((shiftType, dayIndex) => {
-                              if (shiftType === null) {
-                                return (
-                                  <div
-                                    key={dayIndex}
-                                    className="w-6 h-6 bg-gray-100 border border-gray-300 rounded flex items-center justify-center"
-                                    title={`День ${dayIndex + 1}: Выходной`}
-                                  >
-                                    <span className="text-[8px] text-gray-500">—</span>
-                                  </div>
-                                );
-                              } else {
-                                const backgroundColor = shiftType.color || '#e5e7eb';
-                                const textColor = getContrastColor(backgroundColor);
-                                
-                                return (
-                                  <div
-                                    key={dayIndex}
-                                    className="w-6 h-6 border border-gray-300 rounded flex items-center justify-center"
-                                    style={{
-                                      backgroundColor,
-                                      color: textColor,
-                                    }}
-                                    title={`День ${dayIndex + 1}: ${shiftType.name} (${shiftType.startTime}-${shiftType.endTime})`}
-                                  >
-                                    <span className="text-[8px] font-semibold">
-                                      {shiftType.name.charAt(0)}
-                                    </span>
-                                  </div>
-                                );
-                              }
-                            })}
-                          </div>
+                    {/* Разбивка по типам смен */}
+                    {comparison.shiftTypes && comparison.shiftTypes.length > 0 && (
+                      <div className="mb-4">
+                        <h4 className="font-semibold text-gray-700 text-sm mb-2">
+                          Типы смен по сотрудникам:
+                        </h4>
+                        <div className="overflow-x-auto">
+                          <table className="w-full border border-gray-200 text-xs">
+                            <thead className="bg-gray-50">
+                              <tr>
+                                <th className="px-2 py-1 border-b text-left text-xs font-medium text-gray-700">
+                                  Сотрудник
+                                </th>
+                                {comparison.shiftTypes.map((shiftType) => {
+                                  const backgroundColor = shiftType.color || '#f9fafb';
+                                  const textColor = getContrastColor(backgroundColor);
+
+                                  return (
+                                    <th
+                                      key={shiftType.id}
+                                      className="px-2 py-1 border-b text-xs font-medium text-center"
+                                      style={{
+                                        backgroundColor,
+                                        color: textColor,
+                                      }}
+                                      title={`${shiftType.name} (${shiftType.startTime}-${shiftType.endTime}), ${shiftType.workingHours}ч`}
+                                    >
+                                      <div>{shiftType.name}</div>
+                                      <div className="text-[10px] font-normal opacity-90">
+                                        {shiftType.startTime}-{shiftType.endTime}
+                                      </div>
+                                    </th>
+                                  );
+                                })}
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {comparison.employeeMetrics.map((metrics) => (
+                                <tr key={metrics.employeeNumber} className="hover:bg-gray-50">
+                                  <td className="px-2 py-1 border-b text-xs">
+                                    Сотрудник {metrics.employeeNumber}
+                                  </td>
+                                  {comparison.shiftTypes.map((shiftType) => {
+                                    const count = metrics.shiftTypeCounts?.[shiftType.id] ?? 0;
+                                    return (
+                                      <td
+                                        key={shiftType.id}
+                                        className="px-2 py-1 border-b text-xs text-center"
+                                      >
+                                        {count > 0 ? count : '—'}
+                                      </td>
+                                    );
+                                  })}
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
                         </div>
-                      ))}
+                      </div>
+                    )}
+
+                    <h4 className="font-semibold text-gray-700 text-xs mb-2">Паттерны по сотрудникам:</h4>
+                    <div className="space-y-2">
+                      {Array.from(
+                        {
+                          length:
+                            comparisonResult.employeeCount ?? comparisonResult.maxEmployeeCount,
+                        },
+                        (_, index) => {
+                        const employeeNumber = index + 1;
+                        const cacheEntry = patternsCache.get(comparison.profile.id);
+                        const exactPattern = cacheEntry?.byNumber.get(employeeNumber);
+                        let pattern = exactPattern;
+
+                        if (!pattern && cacheEntry?.sorted && cacheEntry.sorted.length > 0) {
+                          const repeatIndex = (employeeNumber - 1) % cacheEntry.sorted.length;
+                          pattern = cacheEntry.sorted[repeatIndex];
+                        }
+
+                        return (
+                          <div key={employeeNumber} className="border border-gray-200 rounded p-2">
+                            <div className="text-xs text-gray-600 mb-1">
+                              Сотрудник {employeeNumber}
+                            </div>
+                            {pattern && cacheEntry?.sorted?.length ? (
+                              <div className="flex flex-wrap gap-1">
+                                {(() => {
+                                  const sequenceLength = pattern.sequence.length;
+                                  if (sequenceLength === 0) {
+                                    return (
+                                      <div className="text-xs text-gray-500 italic">
+                                        Нет данных по паттерну
+                                      </div>
+                                    );
+                                  }
+
+                                  const daysToRender = Math.max(
+                                    globalMaxCycleLength,
+                                    pattern.cycleLength,
+                                    sequenceLength
+                                  );
+
+                                  return Array.from({ length: daysToRender }, (_, dayIndex) => {
+                                    const shiftType = pattern.sequence[dayIndex % sequenceLength];
+
+                                    if (shiftType === null) {
+                                      return (
+                                        <div
+                                          key={dayIndex}
+                                          className="w-6 h-6 bg-gray-100 border border-gray-300 rounded flex items-center justify-center"
+                                          title={`День ${dayIndex + 1}: Выходной`}
+                                        >
+                                          <span className="text-[8px] text-gray-500">—</span>
+                                        </div>
+                                      );
+                                    }
+
+                                    const backgroundColor = shiftType.color || '#e5e7eb';
+                                    const textColor = getContrastColor(backgroundColor);
+
+                                    return (
+                                      <div
+                                        key={dayIndex}
+                                        className="w-6 h-6 border border-gray-300 rounded flex items-center justify-center"
+                                        style={{
+                                          backgroundColor,
+                                          color: textColor,
+                                        }}
+                                        title={`День ${dayIndex + 1}: ${shiftType.name} (${shiftType.startTime}-${shiftType.endTime})`}
+                                      >
+                                        <span className="text-[8px] font-semibold">
+                                          {shiftType.name.charAt(0)}
+                                        </span>
+                                      </div>
+                                    );
+                                  });
+                                })()}
+                              </div>
+                            ) : (
+                              <div className="text-xs text-gray-500 italic">Нет паттернов для отображения</div>
+                            )}
+                          </div>
+                        );
+                      }
+                      )}
                     </div>
                   </div>
                 ))}

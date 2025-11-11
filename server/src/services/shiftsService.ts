@@ -1,6 +1,7 @@
 import { prisma } from '../lib/prisma';
 import { DailyShift, ShiftStatus } from '@prisma/client';
 import { startOfDay, endOfDay, addDays } from 'date-fns';
+import { validateSchedule } from './laborLawComplianceService.js';
 
 export interface CreateShiftData {
   scheduleId: string;
@@ -219,6 +220,23 @@ export async function bulkCreateShifts(
   try {
     console.info('[bulkCreateShifts] upserted', { scheduleId, count: result.length });
   } catch {}
+
+  // Запускаем проверку ТК РФ для расписаний в статусе draft
+  prisma.schedule
+    .findUnique({
+      where: { id: scheduleId },
+      select: { status: true },
+    })
+    .then((schedule) => {
+      if (schedule?.status === 'draft') {
+        validateSchedule(scheduleId).catch((error) => {
+          console.error('Error validating schedule after bulk shift creation:', error);
+        });
+      }
+    })
+    .catch((error) => {
+      console.error('Error checking schedule status:', error);
+    });
 
   return result.length;
 }

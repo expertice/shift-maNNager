@@ -1,5 +1,6 @@
 import { prisma } from '../lib/prisma';
 import { Schedule, ScheduleStatus } from '@prisma/client';
+import { validateSchedule } from './laborLawComplianceService.js';
 
 export interface CreateScheduleData {
   ownerUserId: string;
@@ -14,6 +15,8 @@ export interface UpdateScheduleData {
   startDate?: Date;
   endDate?: Date;
   status?: ScheduleStatus;
+  reportingPeriod?: 'week' | 'month' | 'quarter' | 'year';
+  patternStartOffset?: number;
 }
 
 export interface ScheduleWithDetails extends Schedule {
@@ -107,9 +110,11 @@ export async function getScheduleById(
     include: {
       permissions: true,
       departments: true,
+      positions: true,
       employees: {
         include: {
           department: true,
+          position: true,
         },
       },
       // Экземпляры паттернов для строк ростера
@@ -220,15 +225,27 @@ export async function updateSchedule(
     }
   }
 
-  return prisma.schedule.update({
+  const updated = await prisma.schedule.update({
     where: { id: scheduleId },
     data: {
       ...(data.name && { name: data.name }),
       ...(data.startDate && { startDate: data.startDate }),
       ...(data.endDate && { endDate: data.endDate }),
       ...(data.status && { status: data.status }),
+      ...(data.reportingPeriod !== undefined && { reportingPeriod: data.reportingPeriod }),
+      ...(data.patternStartOffset !== undefined && { patternStartOffset: data.patternStartOffset }),
     },
   });
+
+  // Запускаем проверку ТК РФ для расписаний в статусе draft
+  if (updated.status === 'draft') {
+    // Асинхронно запускаем валидацию (не блокируем ответ)
+    validateSchedule(scheduleId).catch((error) => {
+      console.error('Error validating schedule:', error);
+    });
+  }
+
+  return updated;
 }
 
 /**

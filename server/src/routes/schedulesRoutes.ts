@@ -11,6 +11,8 @@ import vacationsRoutes from './vacationsRoutes';
 import permissionsRoutes from './permissionsRoutes';
 import rosterPatternsRoutes from './rosterPatternsRoutes';
 import shiftSwapsRoutes from './shiftSwapsRoutes';
+import positionsRoutes from './positionsRoutes';
+import departmentsRoutes from './departmentsRoutes';
 
 const router = Router();
 
@@ -26,38 +28,29 @@ router.use(authenticate);
 router.get('/', schedulesController.getSchedules);
 
 /**
- * GET /api/v1/schedules/:id
- * Получить схему по ID
- */
-router.get('/:id', authorize('viewer'), schedulesController.getScheduleById);
-
-/**
  * POST /api/v1/schedules
  * Создать новое расписание
  */
 router.post('/', schedulesController.createSchedule);
 
 /**
- * PUT /api/v1/schedules/:id
- * Обновить расписание
+ * Positions routes
+ * Все маршруты должностей требуют scheduleId
+ * Должны быть определены ПЕРЕД /:id, чтобы не перехватывались
  */
-router.put('/:id', authorize('editor'), schedulesController.updateSchedule);
+router.use('/:scheduleId/positions', positionsRoutes);
 
 /**
- * DELETE /api/v1/schedules/:id
- * Удалить расписание (только владелец)
+ * Departments routes
+ * Все маршруты отделов требуют scheduleId
+ * Должны быть определены ПЕРЕД /:id, чтобы не перехватывались
  */
-router.delete('/:id', authorize('owner'), schedulesController.deleteSchedule);
-
-/**
- * POST /api/v1/schedules/:id/duplicate
- * Создать копию расписания
- */
-router.post('/:id/duplicate', authorize('viewer'), schedulesController.duplicateSchedule);
+router.use('/:scheduleId/departments', departmentsRoutes);
 
 /**
  * Employees routes
  * Все маршруты сотрудников требуют scheduleId
+ * Должны быть определены ПЕРЕД /:id, чтобы не перехватывались
  */
 router.use('/:scheduleId/employees', employeesRoutes);
 
@@ -115,6 +108,34 @@ router.use('/:scheduleId/permissions', permissionsRoutes);
  * Все маршруты запросов на обмен сменами требуют scheduleId
  */
 router.use('/:scheduleId/shift-swaps', shiftSwapsRoutes);
+
+/**
+ * GET /api/v1/schedules/:id
+ * Получить схему по ID
+ * Должен быть определен ПОСЛЕ всех вложенных маршрутов
+ */
+router.get('/:id', authorize('viewer'), schedulesController.getScheduleById);
+
+/**
+ * PUT /api/v1/schedules/:id
+ * Обновить расписание
+ * Должен быть определен ПОСЛЕ всех вложенных маршрутов
+ */
+router.put('/:id', authorize('editor'), schedulesController.updateSchedule);
+
+/**
+ * DELETE /api/v1/schedules/:id
+ * Удалить расписание (только владелец)
+ * Должен быть определен ПОСЛЕ всех вложенных маршрутов
+ */
+router.delete('/:id', authorize('owner'), schedulesController.deleteSchedule);
+
+/**
+ * POST /api/v1/schedules/:id/duplicate
+ * Создать копию расписания
+ * Должен быть определен ПОСЛЕ всех вложенных маршрутов
+ */
+router.post('/:id/duplicate', authorize('viewer'), schedulesController.duplicateSchedule);
 
 export default router;
 

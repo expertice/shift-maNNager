@@ -42,6 +42,11 @@ export interface SchedulePermission {
 export type ScheduleStatus = 'draft' | 'published' | 'completed' | 'archived';
 
 /**
+ * Отчетный период для контроля часов
+ */
+export type ReportingPeriod = 'week' | 'month' | 'quarter' | 'year';
+
+/**
  * Основная схема планирования
  */
 export interface Schedule {
@@ -51,6 +56,11 @@ export interface Schedule {
   startDate: Date;
   endDate: Date;
   status: ScheduleStatus;
+  reportingPeriod?: ReportingPeriod;
+  allowOvertimeWeekly?: boolean;
+  allowOvertimeMonthly?: boolean;
+  allowOvertimeQuarterly?: boolean;
+  patternStartOffset?: number;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -61,6 +71,7 @@ export interface Schedule {
 export interface ScheduleWithDetails extends Schedule {
   permissions?: SchedulePermission[];
   departments?: Department[];
+  positions?: Position[];
   employees?: Employee[];
   shifts?: Shift[];
   vacations?: Vacation[];
@@ -81,12 +92,23 @@ export interface Department {
 }
 
 /**
+ * Должность в рамках схемы
+ */
+export interface Position {
+  id: string;
+  scheduleId: string;
+  name: string;
+}
+
+/**
  * Сотрудник в схеме
  */
 export interface Employee {
   id: string;
   scheduleId: string;
   departmentId: string | null;
+  positionId: string | null;
+  shiftProfileId?: string | null;
   fullName: string;
   tabNumber: string;
   birthDate?: Date | null;
@@ -96,6 +118,8 @@ export interface Employee {
   isPlaceholder?: boolean;
   createdAt: Date;
   department?: Department;
+  position?: Position;
+  shiftProfile?: ShiftProfile;
   restrictions?: EmployeeRestriction[];
 }
 
@@ -148,10 +172,11 @@ export interface ShiftPattern {
 }
 
 /**
- * Профиль смены (глобальный шаблон, например 2/2, 3/3)
+ * Профиль смены (уникальный для каждого расписания, например 2/2, 3/3)
  */
 export interface ShiftProfile {
   id: string;
+  scheduleId: string;
   name: string;
   cycleLength: number;
   minEmployees: number;
@@ -188,6 +213,7 @@ export interface EditShiftPatternData {
  * Данные для редактирования профиля смены
  */
 export interface EditShiftProfileData {
+  scheduleId: string;
   name: string;
   description?: string | null;
   shiftTypes: EditShiftTypeData[];
@@ -525,6 +551,7 @@ export const ScheduleFormSchema = z.object({
 export const EmployeeFormSchema = z.object({
   fullName: z.string().min(1, 'ФИО обязательно').max(255),
   tabNumber: z.string().min(1, 'Табельный номер обязательно'),
+  positionId: z.string().uuid().optional().nullable(),
   birthDate: z.date().optional(),
   departmentId: z.string().uuid(),
 });
@@ -563,6 +590,7 @@ export interface EmployeeProfileMetrics {
   shiftsCount: number;
   totalHours: number;
   nightHours: number;
+  shiftTypeCounts?: Record<string, number>; // Количество смен каждого типа (shiftTypeId -> count)
   additionalMetrics?: ProfileComparisonMetric[]; // Для будущего расширения
 }
 
@@ -583,6 +611,7 @@ export interface ProfileComparisonResult {
   employeeCount: number;
   employeeMetrics: EmployeeProfileMetrics[];
   visualizedPatterns: VisualizedPattern[];
+  shiftTypes: ShiftType[]; // Типы смен для отображения названий
   periodStart: Date;
   periodEnd: Date;
 }
@@ -594,6 +623,120 @@ export interface CompareProfilesRequest {
   profileIds: string[];
   startDate: string; // ISO date
   endDate: string; // ISO date
+  employeeCount?: number;
+}
+
+// ============ Контроль соответствия ТК РФ ============
+
+/**
+ * Источник норм рабочего времени
+ */
+export type WorkHoursSource = 'manual' | 'production_calendar' | 'consultant_ru' | 'custom_api';
+
+/**
+ * Интервал минимального отдыха между сменами
+ */
+export interface MinRestInterval {
+  shiftDuration: number;
+  minRest: number;
+}
+
+/**
+ * Настройки контроля режима труда и отдыха ТК РФ
+ */
+export interface LaborLawSettings {
+  id: string;
+  maxWorkingHoursPerShift: number;
+  minRestBetweenShifts: MinRestInterval[];
+  maxHoursPerWeek: number;
+  maxHoursPerMonth: number;
+  maxHoursPerQuarter: number;
+  maxOvertimeHoursPerYear: number;
+  nightHoursStart: string;
+  nightHoursEnd: string;
+  includeBreaksInNightHours: boolean;
+  maxConsecutiveWorkDays: number;
+  maxNightShiftsPerWeek: number | null;
+  enabledRules: string[];
+  workHoursSource: WorkHoursSource;
+  customApiUrl: string | null;
+  lastSyncAt: Date | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+/**
+ * Норма рабочего времени для года
+ */
+export interface WorkHoursNorm {
+  id: string;
+  year: number;
+  totalHours: number;
+  isManualOverride: boolean;
+  source: WorkHoursSource;
+  workingDays: number | null;
+  weekendDays: number | null;
+  holidayDays: number | null;
+  metadata: any | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+/**
+ * Тип нарушения ТК РФ
+ */
+export type LaborViolationType =
+  | 'excessive_shift_hours'
+  | 'insufficient_rest'
+  | 'excessive_weekly_hours'
+  | 'excessive_monthly_hours'
+  | 'excessive_quarterly_hours'
+  | 'excessive_yearly_hours'
+  | 'excessive_consecutive_days'
+  | 'excessive_night_shifts';
+
+/**
+ * Критичность нарушения
+ */
+export type ViolationSeverity = 'critical' | 'warning' | 'info';
+
+/**
+ * Нарушение требований ТК РФ
+ */
+export interface LaborViolation {
+  id: string;
+  scheduleId: string;
+  employeeId: string | null;
+  violationType: LaborViolationType;
+  severity: ViolationSeverity;
+  dateFrom: Date;
+  dateTo: Date | null;
+  dailyShiftId: string | null;
+  actualValue: number;
+  expectedValue: number;
+  articleTkRf: string;
+  description: string;
+  resolved: boolean;
+  resolutionNotes: string | null;
+  detectedAt: Date;
+  updatedAt: Date;
+  employee?: {
+    id: string;
+    fullName: string;
+    tabNumber: string;
+  };
+  dailyShift?: Shift;
+}
+
+/**
+ * Статистика нарушений для расписания
+ */
+export interface ViolationStats {
+  total: number;
+  bySeverity: Record<ViolationSeverity, number>;
+  byType: Record<LaborViolationType, number>;
+  resolved: number;
+  unresolved: number;
 }
 
 /**
@@ -602,5 +745,6 @@ export interface CompareProfilesRequest {
 export interface CompareProfilesResponse {
   comparisons: ProfileComparisonResult[];
   maxEmployeeCount: number; // Наибольшее minEmployees среди профилей
+  employeeCount: number; // Фактическое количество сотрудников в расчёте
 }
 

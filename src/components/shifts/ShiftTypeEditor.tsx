@@ -5,7 +5,7 @@ import {
   calculateShiftParameters,
   timeToMinutes,
 } from '@services/utils/shiftCalculations';
-import { Copy, Trash2, X, Save } from 'lucide-react';
+import { Copy, Trash2, Save } from 'lucide-react';
 
 /**
  * Props для компонента редактирования типа смены
@@ -40,6 +40,16 @@ export interface ShiftTypeEditorProps {
    * Режим - создание нового или редактирование
    */
   mode?: 'create' | 'edit';
+
+  /**
+   * Автоматически вызывать onSave при изменениях
+   */
+  autoSave?: boolean;
+
+  /**
+   * Скрыть управляющие кнопки (сохранять/отменять)
+   */
+  hideActions?: boolean;
 }
 
 /**
@@ -52,6 +62,8 @@ export const ShiftTypeEditor: React.FC<ShiftTypeEditorProps> = ({
   onDelete,
   onClone,
   mode = 'edit',
+  autoSave = false,
+  hideActions = false,
 }) => {
   const [name, setName] = useState(shiftType?.name || '');
   const [startTime, setStartTime] = useState(shiftType?.startTime || '09:00');
@@ -194,6 +206,17 @@ export const ShiftTypeEditor: React.FC<ShiftTypeEditorProps> = ({
     return Object.keys(newErrors).length === 0;
   };
 
+  const buildPayload = React.useCallback((): EditShiftTypeData => ({
+    id: shiftType?.id,
+    name: name.trim(),
+    startTime,
+    endTime,
+    breaks: shiftParams.breaks,
+    nightHoursCount: shiftParams.nightHours,
+    workingHours: shiftParams.workingHours,
+    color,
+  }), [shiftType?.id, name, startTime, endTime, color, shiftParams.breaks, shiftParams.nightHours, shiftParams.workingHours]);
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
 
@@ -201,25 +224,47 @@ export const ShiftTypeEditor: React.FC<ShiftTypeEditorProps> = ({
       return;
     }
 
-    // Используем рассчитанные параметры с автоматическими перерывами
-    onSave({
-      id: shiftType?.id,
-      name: name.trim(),
-      startTime,
-      endTime,
-      breaks: shiftParams.breaks, // Сохраняем все перерывы (автоматические + ручные)
-      nightHoursCount: shiftParams.nightHours,
-      workingHours: shiftParams.workingHours,
-      color,
-    });
+    onSave(buildPayload());
   };
+
+  // Обработчик для кнопки сохранения (без события формы)
+  const handleSaveClick = () => {
+    if (!validate()) {
+      return;
+    }
+
+    onSave(buildPayload());
+  };
+
+  const lastSavedRef = React.useRef<string>('');
+
+  React.useEffect(() => {
+    if (!autoSave) return;
+    lastSavedRef.current = JSON.stringify(buildPayload());
+  }, [autoSave, buildPayload, shiftType?.id]);
+
+  React.useEffect(() => {
+    if (!autoSave) return;
+    if (!name.trim() || !startTime || !endTime) return;
+
+    const payload = buildPayload();
+    const serialized = JSON.stringify(payload);
+    if (serialized === lastSavedRef.current) return;
+
+    const timer = window.setTimeout(() => {
+      lastSavedRef.current = serialized;
+      onSave(payload);
+    }, 400);
+
+    return () => window.clearTimeout(timer);
+  }, [autoSave, buildPayload, onSave, name, startTime, endTime, shiftParams.nightHours, shiftParams.workingHours, shiftParams.breaks]);
 
   return (
     <Card className="p-4">
       <form onSubmit={handleSubmit} className="space-y-4">
         <div className="flex items-center justify-between">
           <h3 className="text-lg font-semibold">
-            {mode === 'create' ? 'Новый тип смены' : 'Редактирование типа смены'}
+            {mode === 'create' ? 'Новый тип смены' : 'Тип смены'}
           </h3>
           <div className="flex gap-2">
             {shiftType?.id && onClone && (
@@ -246,7 +291,20 @@ export const ShiftTypeEditor: React.FC<ShiftTypeEditorProps> = ({
                 <Trash2 size={16} />
               </Button>
             )}
-            {onCancel && (
+            {/* Кнопка сохранения с дискеткой при hideActions */}
+            {hideActions && (
+              <button
+                type="button"
+                onClick={handleSaveClick}
+                disabled={!name.trim() || !startTime || !endTime}
+                className="text-gray-400 hover:text-blue-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed p-1"
+                aria-label="Сохранить тип смены"
+                title="Сохранить тип смены"
+              >
+                <Save size={18} />
+              </button>
+            )}
+            {!hideActions && onCancel && (
               <Button 
                 type="button" 
                 variant="outline" 
@@ -255,18 +313,20 @@ export const ShiftTypeEditor: React.FC<ShiftTypeEditorProps> = ({
                 title="Отмена"
                 className="px-2"
               >
-                <X size={16} />
+                Отмена
               </Button>
             )}
-            <Button 
-              type="submit" 
-              variant="primary" 
-              size="sm"
-              title={mode === 'create' ? 'Создать' : 'Сохранить'}
-              className="px-2"
-            >
-              <Save size={16} />
-            </Button>
+            {!hideActions && (
+              <Button 
+                type="submit" 
+                variant="primary" 
+                size="sm"
+                title={mode === 'create' ? 'Создать' : 'Сохранить'}
+                className="px-2"
+              >
+                Сохранить
+              </Button>
+            )}
           </div>
         </div>
 
@@ -394,7 +454,7 @@ export const ShiftTypeEditor: React.FC<ShiftTypeEditorProps> = ({
                 </div>
               </div>
             ))}
-            {manualBreaks.length === 0 && !hasAutomaticBreak && (
+            {manualBreaks.length === 0 && hasAutomaticBreak && (
               <p className="text-sm text-gray-500">Ручные перерывы не указаны</p>
             )}
           </div>

@@ -12,5 +12,7 @@ export * from './analyticsService';
 export * from './historyService';
 export * from './permissionsService';
 export * from './patternInstancesService';
+export * from './positionsService';
+export * from './departmentsService';
 export * as patternInstancesService from './patternInstancesService';
 

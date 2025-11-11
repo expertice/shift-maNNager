@@ -23,6 +23,18 @@ router.post('/', authenticate, shiftProfilesController.createShiftProfile);
 router.post('/compare', authenticate, shiftProfilesController.compareProfilesHandler);
 
 /**
+ * POST /api/v1/shift-profiles/update-pattern-offset
+ * Обновить смещение паттерна для всех экземпляров в расписании (требуется аутентификация)
+ */
+router.post('/update-pattern-offset', authenticate, shiftProfilesController.updatePatternOffsetHandler);
+
+/**
+ * POST /api/v1/shift-profiles/update-employee-pattern-offset
+ * Обновить смещение паттерна для конкретного сотрудника (требуется аутентификация)
+ */
+router.post('/update-employee-pattern-offset', authenticate, shiftProfilesController.updateEmployeePatternOffsetHandler);
+
+/**
  * GET /api/v1/shift-profiles/:id
  * Получить профиль смены по ID
  */

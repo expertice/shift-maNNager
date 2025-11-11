@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { MainLayout, SidebarIcons } from '@components/layout';
@@ -34,8 +34,8 @@ export default function ShiftProfilesPage() {
 
   // Загрузка профилей смен
   const { data: profiles, isLoading: profilesLoading } = useQuery({
-    queryKey: ['shift-profiles'],
-    queryFn: () => shiftProfilesService.getShiftProfiles(),
+    queryKey: ['shift-profiles', scheduleId],
+    queryFn: () => shiftProfilesService.getShiftProfiles(scheduleId),
   });
 
   // Загрузка расписания
@@ -51,6 +51,48 @@ export default function ShiftProfilesPage() {
     queryFn: () => employeesService.getEmployees(scheduleId),
     enabled: !!scheduleId,
   });
+
+  // Порядок сотрудников как на странице расписания (DnD сохраняется в localStorage)
+  const [employeeOrder, setEmployeeOrder] = useState<string[]>([]);
+
+  useEffect(() => {
+    if (employees && employees.length > 0 && scheduleId) {
+      setEmployeeOrder(prev => {
+        // Попытка восстановить сохраненный порядок
+        const savedOrder = localStorage.getItem(`employeeOrder_${scheduleId}`);
+        if (savedOrder) {
+          try {
+            const parsedOrder: unknown = JSON.parse(savedOrder);
+            if (Array.isArray(parsedOrder) && parsedOrder.length > 0) {
+              const employeeIds = new Set(employees.map(emp => emp.id));
+              const validOrder = parsedOrder.filter((id: string) => employeeIds.has(id));
+              const newIds = employees
+                .filter(emp => !validOrder.includes(emp.id))
+                .map(emp => emp.id);
+              return newIds.length > 0 ? [...validOrder, ...newIds] : validOrder;
+            }
+          } catch (error) {
+            console.error('Error parsing saved employee order:', error);
+          }
+        }
+        // Если нет сохраненного порядка — порядок как в текущем списке
+        return employees.map(emp => emp.id);
+      });
+    }
+  }, [employees, scheduleId]);
+
+  // Сортированные сотрудники по сохраненному порядку
+  const sortedEmployees = useMemo(() => {
+    if (!employees || employeeOrder.length === 0) return employees || [];
+    const orderMap = new Map(employeeOrder.map((id, index) => [id, index]));
+    const sorted = [...employees].sort((a, b) => {
+      const aIndex = orderMap.get(a.id) ?? Infinity;
+      const bIndex = orderMap.get(b.id) ?? Infinity;
+      return aIndex - bIndex;
+    });
+    const newEmployees = employees.filter(emp => !orderMap.has(emp.id));
+    return [...sorted, ...newEmployees];
+  }, [employees, employeeOrder]);
 
   // Генерация смен
   const generateMutation = useMutation({
@@ -69,10 +111,13 @@ export default function ShiftProfilesPage() {
       await queryClient.invalidateQueries({ queryKey: ['shifts', scheduleId] });
       await queryClient.invalidateQueries({ queryKey: ['schedule', scheduleId] });
       await queryClient.invalidateQueries({ queryKey: ['shiftProfiles'] });
+      await queryClient.invalidateQueries({ queryKey: ['shift-profiles'] });
       await queryClient.invalidateQueries({ queryKey: ['employees', scheduleId] });
       
-      // Даем небольшую задержку для завершения инвалидации
-      await new Promise(resolve => setTimeout(resolve, 100));
+      // Принудительно обновляем данные смен перед переходом на страницу расписания
+      await queryClient.refetchQueries({ queryKey: ['shifts', scheduleId] });
+      await queryClient.refetchQueries({ queryKey: ['patternInstances', scheduleId] });
+      await queryClient.refetchQueries({ queryKey: ['schedule', scheduleId] });
       
       // Редиректим на страницу расписания для просмотра результатов
       navigate(`/schedule/${scheduleId}`);
@@ -139,7 +184,7 @@ export default function ShiftProfilesPage() {
   const createProfileMutation = useMutation({
     mutationFn: (data: EditShiftProfileData) => shiftProfilesService.createShiftProfile(data),
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ['shift-profiles'] });
+      await queryClient.invalidateQueries({ queryKey: ['shift-profiles', scheduleId] });
       setIsCreatingProfile(false);
       alert('Профиль успешно создан!');
     },
@@ -157,7 +202,7 @@ export default function ShiftProfilesPage() {
       return shiftProfilesService.updateShiftProfile(editingProfileId, data);
     },
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ['shift-profiles'] });
+      await queryClient.invalidateQueries({ queryKey: ['shift-profiles', scheduleId] });
       setEditingProfileId(null);
       alert('Профиль успешно обновлен!');
     },
@@ -176,7 +221,18 @@ export default function ShiftProfilesPage() {
     setEditingProfileId(null);
   };
 
-  const handleSaveProfile = async (data: EditShiftProfileData) => {
+  const handleSaveProfile = async (data: EditShiftProfileData, options?: { silent?: boolean }) => {
+    if (options?.silent) {
+      if (!editingProfileId) return;
+      try {
+        await shiftProfilesService.updateShiftProfile(editingProfileId, data);
+        await queryClient.invalidateQueries({ queryKey: ['shift-profiles', scheduleId] });
+      } catch (error: any) {
+        console.error('Ошибка тихого сохранения профиля:', error);
+      }
+      return;
+    }
+
     if (isCreatingProfile) {
       await createProfileMutation.mutateAsync(data);
     } else {
@@ -186,9 +242,9 @@ export default function ShiftProfilesPage() {
 
   // Удаление профиля
   const deleteProfileMutation = useMutation({
-    mutationFn: (id: string) => shiftProfilesService.deleteShiftProfile(id),
+    mutationFn: (id: string) => shiftProfilesService.deleteShiftProfile(id, scheduleId),
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ['shift-profiles'] });
+      await queryClient.invalidateQueries({ queryKey: ['shift-profiles', scheduleId] });
       alert('Профиль успешно удален!');
     },
     onError: (error: any) => {
@@ -200,7 +256,7 @@ export default function ShiftProfilesPage() {
   const cloneProfileMutation = useMutation({
     mutationFn: (id: string) => shiftProfilesService.cloneShiftProfile(id),
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ['shift-profiles'] });
+      await queryClient.invalidateQueries({ queryKey: ['shift-profiles', scheduleId] });
       alert('Профиль успешно клонирован!');
     },
     onError: (error: any) => {
@@ -370,7 +426,7 @@ export default function ShiftProfilesPage() {
               onGenerate={handleGenerateSubmit}
               isLoading={generateMutation.isPending}
               profile={selectedProfile || null}
-              employees={employees}
+              employees={sortedEmployees}
               scheduleStartDate={new Date(schedule.startDate)}
               scheduleEndDate={new Date(schedule.endDate)}
             />
@@ -380,6 +436,7 @@ export default function ShiftProfilesPage() {
                 setEditingProfileId(null);
                 setIsCreatingProfile(false);
               }}
+              scheduleId={scheduleId}
               profile={editingProfile || null}
               onSave={handleSaveProfile}
               isLoading={
@@ -392,6 +449,7 @@ export default function ShiftProfilesPage() {
               isOpen={isCompareModalOpen}
               onClose={() => setIsCompareModalOpen(false)}
               selectedProfileIds={selectedProfileIds}
+              selectedProfiles={profiles?.filter((profile) => selectedProfileIds.includes(profile.id)) || []}
               scheduleStartDate={new Date(schedule.startDate)}
               scheduleEndDate={new Date(schedule.endDate)}
             />

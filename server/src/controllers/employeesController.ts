@@ -37,7 +37,7 @@ export async function createEmployee(
 ): Promise<void> {
   try {
     const { scheduleId } = req.params;
-    const { fullName, tabNumber, birthDate, departmentId } = req.body;
+    const { fullName, tabNumber, positionId, birthDate, departmentId } = req.body;
 
     if (!fullName || !tabNumber || !departmentId) {
       const error: ApiError = {
@@ -53,6 +53,7 @@ export async function createEmployee(
       departmentId,
       fullName,
       tabNumber,
+      positionId,
       birthDate: birthDate ? new Date(birthDate) : undefined,
     });
 
@@ -189,6 +190,74 @@ export async function createPlaceholders(
     res.status(201).json({
       success: true,
       data: employees,
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * POST /api/v1/schedules/:scheduleId/employees/:id/clone
+ * Клонировать сотрудника
+ */
+export async function cloneEmployee(
+  req: AuthRequest,
+  res: Response<ApiResponse<Employee>>,
+  next: NextFunction
+): Promise<void> {
+  try {
+    const { scheduleId, id } = req.params;
+    const clonedEmployee = await employeesService.cloneEmployee(id, scheduleId);
+
+    if (!clonedEmployee) {
+      const error: ApiError = {
+        status: 404,
+        code: 'NOT_FOUND',
+        message: 'Employee not found',
+      };
+      return next(error);
+    }
+
+    res.status(201).json({
+      success: true,
+      data: clonedEmployee,
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * PUT /api/v1/schedules/:scheduleId/employees/:id/assign-profile
+ * Назначить профиль смены сотруднику
+ */
+export async function assignProfile(
+  req: AuthRequest,
+  res: Response<ApiResponse<Employee>>,
+  next: NextFunction
+): Promise<void> {
+  try {
+    const { scheduleId, id } = req.params;
+    const { shiftProfileId } = req.body;
+
+    const updatedEmployee = await employeesService.assignShiftProfile(
+      id,
+      scheduleId,
+      shiftProfileId
+    );
+
+    if (!updatedEmployee) {
+      const error: ApiError = {
+        status: 404,
+        code: 'NOT_FOUND',
+        message: 'Employee not found',
+      };
+      return next(error);
+    }
+
+    res.json({
+      success: true,
+      data: updatedEmployee,
     });
   } catch (error) {
     next(error);

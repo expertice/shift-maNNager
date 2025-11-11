@@ -1,13 +1,14 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query';
 import { MainLayout, SidebarIcons } from '@components/layout';
 import { Spinner, Card, Button, Badge } from '@components/common';
-import { schedulesService, shiftsService, employeesService, patternInstancesService, shiftProfilesService } from '@services/api';
+import { schedulesService, shiftsService, employeesService, patternInstancesService, shiftProfilesService, positionsService } from '@services/api';
 import type { RosterPatternInstanceDTO } from '@services/api/patternInstancesService';
 import { useRealtime } from '@hooks/useRealtime';
 import { EditPeriodModal } from '@components/schedules/EditPeriodModal';
 import { ShiftSwapRequestsModal } from '@components/schedules/ShiftSwapRequestsModal';
+import { EditEmployeeModal } from '@components/employees';
 import { shiftSwapService } from '@services/api/shiftSwapService';
 import { Shift, Employee } from '@types';
 import { format, eachDayOfInterval, parseISO, isDate, startOfDay, endOfDay } from 'date-fns';
@@ -15,6 +16,8 @@ import { ru } from 'date-fns/locale';
 import RosterMonthBoard from '@components/schedules/RosterMonthBoard';
 import { SlotView } from '@components/shifts/PatternConstructor';
 import { splitPeriodByMonths, maxDaysAcrossMonths, getSlotStatus } from '@/utils/rosterCalendar';
+import LaborViolationsModal from '@components/schedules/LaborViolationsModal';
+import LaborLawSettingsModal from '@components/labor/LaborLawSettingsModal';
 
 /**
  * Основная страница редактирования расписания
@@ -26,6 +29,10 @@ export default function MainSchedule() {
   const [isEditPeriodModalOpen, setIsEditPeriodModalOpen] = useState(false);
   const [isSwapRequestsModalOpen, setIsSwapRequestsModalOpen] = useState(false);
   const [selectedSlotForSwap, setSelectedSlotForSwap] = useState<{ employeeId: string; dayIndex: number } | null>(null);
+  const [editingEmployeeId, setEditingEmployeeId] = useState<string | null>(null);
+  const [employeeOrder, setEmployeeOrder] = useState<string[]>([]);
+  const [isLaborViolationsModalOpen, setIsLaborViolationsModalOpen] = useState<boolean>(false);
+  const [isLaborSettingsOpen, setIsLaborSettingsOpen] = useState<boolean>(false);
 
   if (!scheduleId) {
     return <div>Ошибка: не указан ID расписания</div>;
@@ -51,6 +58,71 @@ export default function MainSchedule() {
     refetchOnWindowFocus: true,
   });
 
+  // Сохранение порядка сотрудников в localStorage при изменении
+  useEffect(() => {
+    if (scheduleId && employeeOrder.length > 0) {
+      localStorage.setItem(`employeeOrder_${scheduleId}`, JSON.stringify(employeeOrder));
+    }
+  }, [employeeOrder, scheduleId]);
+
+  // Инициализация и обновление порядка сотрудников при загрузке
+  useEffect(() => {
+    if (employees && employees.length > 0 && scheduleId) {
+      setEmployeeOrder(prev => {
+        // Если порядок уже установлен, обновляем его (добавляем новых, удаляем несуществующих)
+        if (prev.length > 0) {
+          const existingIds = new Set(prev);
+          const newIds = employees
+            .filter(emp => !existingIds.has(emp.id))
+            .map(emp => emp.id);
+          // Удаляем несуществующих сотрудников из порядка
+          const employeeIds = new Set(employees.map(emp => emp.id));
+          const filtered = prev.filter(id => employeeIds.has(id));
+          return newIds.length > 0 ? [...filtered, ...newIds] : filtered;
+        }
+        
+        // Если порядок не установлен, загружаем из localStorage или инициализируем из массива сотрудников
+        const savedOrder = localStorage.getItem(`employeeOrder_${scheduleId}`);
+        if (savedOrder) {
+          try {
+            const parsedOrder = JSON.parse(savedOrder);
+            if (Array.isArray(parsedOrder) && parsedOrder.length > 0) {
+              // Проверяем, что все ID из сохраненного порядка существуют в текущем списке сотрудников
+              const employeeIds = new Set(employees.map(emp => emp.id));
+              const validOrder = parsedOrder.filter(id => employeeIds.has(id));
+              // Добавляем новых сотрудников в конец
+              const newIds = employees
+                .filter(emp => !validOrder.includes(emp.id))
+                .map(emp => emp.id);
+              return newIds.length > 0 ? [...validOrder, ...newIds] : validOrder;
+            }
+          } catch (error) {
+            console.error('Error parsing saved employee order:', error);
+          }
+        }
+        
+        // Если нет сохраненного порядка, инициализируем из массива сотрудников
+        return employees.map(emp => emp.id);
+      });
+    }
+  }, [employees, scheduleId]);
+
+  // Сортированные сотрудники по порядку
+  const sortedEmployees = useMemo(() => {
+    if (!employees || employeeOrder.length === 0) return employees || [];
+    
+    const orderMap = new Map(employeeOrder.map((id, index) => [id, index]));
+    const sorted = [...employees].sort((a, b) => {
+      const aIndex = orderMap.get(a.id) ?? Infinity;
+      const bIndex = orderMap.get(b.id) ?? Infinity;
+      return aIndex - bIndex;
+    });
+    
+    // Добавляем новых сотрудников в конец, если они появились
+    const newEmployees = employees.filter(emp => !orderMap.has(emp.id));
+    return [...sorted, ...newEmployees];
+  }, [employees, employeeOrder]);
+
   // Загрузка экземпляров паттернов (для DnD-режима)
   const { data: patternInstances } = useQuery({
     queryKey: ['patternInstances', scheduleId],
@@ -63,11 +135,22 @@ export default function MainSchedule() {
 
   // Загружаем профили смен, чтобы получить цвета и названия типов смен
   const { data: shiftProfiles } = useQuery({
-    queryKey: ['shiftProfiles'],
-    queryFn: () => shiftProfilesService.getShiftProfiles(),
+    queryKey: ['shiftProfiles', scheduleId],
+    queryFn: () => scheduleId ? shiftProfilesService.getShiftProfiles(scheduleId) : Promise.resolve([]),
+    enabled: !!scheduleId,
     staleTime: 0, // Считаем данные устаревшими сразу
     refetchOnMount: true, // Обновлять при монтировании
     refetchOnWindowFocus: true, // Обновлять при фокусе окна
+  });
+
+  // Загрузка должностей
+  const { data: positions } = useQuery({
+    queryKey: ['positions', scheduleId],
+    queryFn: () => positionsService.getPositions(scheduleId),
+    enabled: !!scheduleId,
+    staleTime: 0,
+    refetchOnMount: true,
+    refetchOnWindowFocus: true,
   });
 
   // Загрузка смен с фильтрацией по периоду расписания
@@ -119,6 +202,173 @@ export default function MainSchedule() {
     queryClient.invalidateQueries({ queryKey: ['shifts', scheduleId] });
     queryClient.invalidateQueries({ queryKey: ['shift-swaps', scheduleId] });
   });
+
+  // Мутация для создания сотрудника
+  const createEmployeeMutation = useMutation({
+    mutationFn: (data: { fullName: string; tabNumber: string; birthDate?: string; departmentId: string; positionId?: string }) => {
+      return employeesService.createEmployee(scheduleId, data);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['employees', scheduleId] });
+      setEditingEmployeeId(null);
+    },
+  });
+
+  // Мутация для обновления сотрудника
+  const updateEmployeeMutation = useMutation({
+    mutationFn: (data: { fullName: string; tabNumber: string; birthDate?: string; departmentId: string }) => {
+      if (!editingEmployeeId || editingEmployeeId === 'new') throw new Error('No employee selected');
+      return employeesService.updateEmployee(scheduleId, editingEmployeeId, data);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['employees', scheduleId] });
+      setEditingEmployeeId(null);
+    },
+  });
+
+  // Мутация для удаления сотрудника
+  const deleteEmployeeMutation = useMutation({
+    mutationFn: (employeeId: string) => employeesService.deleteEmployee(scheduleId, employeeId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['employees', scheduleId] });
+    },
+  });
+
+  // Мутация для клонирования сотрудника
+  const cloneEmployeeMutation = useMutation({
+    mutationFn: (employeeId: string) => employeesService.cloneEmployee(scheduleId, employeeId),
+    onSuccess: (newEmployee) => {
+      queryClient.invalidateQueries({ queryKey: ['employees', scheduleId] });
+      // Добавляем нового сотрудника в конец списка
+      if (newEmployee) {
+        setEmployeeOrder(prev => [...prev, newEmployee.id]);
+      }
+    },
+  });
+
+  // Функция обновления смещения паттерна с перегенерацией смен
+  const handlePatternOffsetChange = async (offsetDelta: number) => {
+    if (!schedule || !employees) return;
+
+    try {
+      // Обновляем смещение в экземплярах паттернов (включая patternStartOffset в расписании)
+      await shiftProfilesService.updatePatternOffset(scheduleId, offsetDelta);
+      
+      // Группируем сотрудников по профилям
+      const employeesByProfile = new Map<string, string[]>();
+      employees.forEach((emp) => {
+        if (emp.shiftProfileId) {
+          const profileId = emp.shiftProfileId;
+          if (!employeesByProfile.has(profileId)) {
+            employeesByProfile.set(profileId, []);
+          }
+          employeesByProfile.get(profileId)!.push(emp.id);
+        }
+      });
+
+      // Перегенерируем смены для каждого профиля
+      const startDate = new Date(schedule.startDate);
+      const endDate = new Date(schedule.endDate);
+      
+      for (const [profileId, employeeIds] of employeesByProfile.entries()) {
+        try {
+          await shiftProfilesService.generateShifts({
+            scheduleId,
+            shiftProfileId: profileId,
+            employeeIds,
+            startDate,
+            endDate,
+          });
+        } catch (error) {
+          console.error(`Error regenerating shifts for profile ${profileId}:`, error);
+        }
+      }
+
+      // Обновляем кэш
+      queryClient.invalidateQueries({ queryKey: ['schedule', scheduleId] });
+      queryClient.invalidateQueries({ queryKey: ['shifts', scheduleId] });
+      queryClient.invalidateQueries({ queryKey: ['patternInstances', scheduleId] });
+    } catch (error) {
+      console.error('Error updating pattern offset:', error);
+      alert('Ошибка обновления смещения паттерна');
+    }
+  };
+
+  // Функции перемещения сотрудников
+  const handleEmployeeMoveUp = (employeeId: string) => {
+    setEmployeeOrder(prev => {
+      const index = prev.indexOf(employeeId);
+      if (index > 0) {
+        const newOrder = [...prev];
+        [newOrder[index - 1], newOrder[index]] = [newOrder[index], newOrder[index - 1]];
+        return newOrder;
+      }
+      return prev;
+    });
+  };
+
+  const handleEmployeeMoveDown = (employeeId: string) => {
+    setEmployeeOrder(prev => {
+      const index = prev.indexOf(employeeId);
+      if (index < prev.length - 1) {
+        const newOrder = [...prev];
+        [newOrder[index], newOrder[index + 1]] = [newOrder[index + 1], newOrder[index]];
+        return newOrder;
+      }
+      return prev;
+    });
+  };
+
+  // Обработчик назначения профиля сотруднику
+  const handleAssignProfile = async (employeeId: string, shiftProfileId: string | null) => {
+    try {
+      await employeesService.assignProfileToEmployee(employeeId, scheduleId, shiftProfileId);
+      
+      // Если профиль назначен (не null), генерируем смены для этого сотрудника
+      if (shiftProfileId && schedule) {
+        // Конвертируем даты в ISO формат для API
+        const startDateISO = typeof schedule.startDate === 'string' 
+          ? schedule.startDate 
+          : new Date(schedule.startDate).toISOString();
+        const endDateISO = typeof schedule.endDate === 'string' 
+          ? schedule.endDate 
+          : new Date(schedule.endDate).toISOString();
+          
+        await shiftProfilesService.generateShifts(scheduleId, {
+          shiftProfileId,
+          employeeIds: [employeeId],
+          startDate: startDateISO,
+          endDate: endDateISO,
+        });
+      }
+      
+      // Обновляем все связанные данные
+      queryClient.invalidateQueries({ queryKey: ['employees', scheduleId] });
+      queryClient.invalidateQueries({ queryKey: ['patternInstances', scheduleId] });
+      queryClient.invalidateQueries({ queryKey: ['schedule', scheduleId] });
+      queryClient.invalidateQueries({ queryKey: ['shifts', scheduleId] });
+    } catch (error: any) {
+      console.error('Error assigning profile:', error);
+      alert(`Ошибка назначения профиля: ${error.response?.data?.message || error.message}`);
+    }
+  };
+
+  // Обработчик смещения паттерна конкретного сотрудника
+  const handleEmployeePatternOffsetChange = async (employeeId: string, offsetDelta: number) => {
+    try {
+      await shiftProfilesService.updateEmployeePatternOffset(scheduleId, employeeId, offsetDelta);
+      queryClient.invalidateQueries({ queryKey: ['patternInstances', scheduleId] });
+      queryClient.invalidateQueries({ queryKey: ['shifts', scheduleId] });
+    } catch (error: any) {
+      console.error('Error updating employee pattern offset:', error);
+      alert(`Ошибка обновления смещения паттерна: ${error.response?.data?.message || error.message}`);
+    }
+  };
+
+  // Обработчик добавления сотрудника
+  const handleAddEmployee = () => {
+    setEditingEmployeeId('new');
+  };
 
   // Получаем даты периода расписания для отображения
   // Важно: используем локальное время для корректной работы с датами
@@ -238,7 +488,16 @@ export default function MainSchedule() {
             <div className="mb-6">
               <div className="flex items-center justify-between mb-4">
                 <div>
+                  <div className="flex items-center space-x-3">
                   <h1 className="text-3xl font-bold">{schedule.name}</h1>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setIsLaborSettingsOpen(true)}
+                    >
+                      Настройки ТК РФ
+                    </Button>
+                  </div>
                   <p className="text-gray-600 mt-1">
                     {format(new Date(schedule.startDate), 'dd MMMM yyyy', { locale: ru })} -{' '}
                     {format(new Date(schedule.endDate), 'dd MMMM yyyy', { locale: ru })}
@@ -251,6 +510,13 @@ export default function MainSchedule() {
                     onClick={() => setIsEditPeriodModalOpen(true)}
                   >
                     Редактировать период
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setIsLaborViolationsModalOpen(true)}
+                  >
+                    Проверка ТК РФ
                   </Button>
                   <div className="relative">
                     <Button
@@ -293,13 +559,24 @@ export default function MainSchedule() {
             {/* Представление ростера: всегда через движок паттернов */}
             {employees && employees.length > 0 ? (
               (() => {
+                // Вычисляем максимальную длину цикла из всех паттернов для отображения смещения
+                const allCycleLengths = shiftProfiles 
+                  ? shiftProfiles.flatMap(sp => (sp.patterns || []).map(p => p.cycleLength || 0)).filter(l => l > 0)
+                  : [];
+                const maxCycleLength = allCycleLengths.length > 0 ? Math.max(...allCycleLengths) : 0;
                 const start = startOfDay(new Date(schedule.startDate));
                 const end = endOfDay(new Date(schedule.endDate));
                 const months = splitPeriodByMonths(start, end);
                 const maxDays = maxDaysAcrossMonths(months);
                 const instancesByEmp = Object.fromEntries(
-                  (patternInstances || []).map((p) => [p.employeeId, { sequence: p.sequence, startIndex: p.startIndex, lockedIndices: p.lockedIndices }])
+                  (patternInstances || []).map((p) => [p.employeeId, { 
+                    sequence: p.sequence, 
+                    startIndex: p.startIndex, 
+                    lockedIndices: p.lockedIndices,
+                    cycleLength: p.pattern?.cycleLength || 0
+                  }])
                 );
+                
                 // Определяем последний использованный профиль по shiftAssignments
                 // Это надежно, т.к. каждая генерация создает новую запись
                 const assignedProfileIds = new Set<string>();
@@ -341,10 +618,18 @@ export default function MainSchedule() {
                   workingHours?: number;
                 }> = [];
                 
-                // Если есть назначенные профили, фильтруем типы смен только из этих профилей
-                // Если назначений нет, показываем все типы (для обратной совместимости)
-                const profilesToUse = assignedProfileIds.size > 0
-                  ? (shiftProfiles || []).filter((sp) => assignedProfileIds.has(sp.id))
+                // Собираем все активные профили: из shiftAssignments и из назначенных сотрудникам
+                const activeProfileIds = new Set<string>(assignedProfileIds);
+                (employees || []).forEach((emp) => {
+                  if (emp.shiftProfileId) {
+                    activeProfileIds.add(emp.shiftProfileId);
+                  }
+                });
+                
+                // Если есть активные профили, фильтруем типы смен только из этих профилей
+                // Если активных профилей нет, показываем все типы (для обратной совместимости)
+                const profilesToUse = activeProfileIds.size > 0
+                  ? (shiftProfiles || []).filter((sp) => activeProfileIds.has(sp.id))
                   : (shiftProfiles || []);
                 
                 profilesToUse.forEach((sp) => {
@@ -636,13 +921,32 @@ export default function MainSchedule() {
                         {/* Убран заголовок с красной полосой */}
                         <RosterMonthBoard
                           title={format(new Date(m.year, m.month, 1), 'LLLL yyyy', { locale: ru })}
-                          employees={employees}
+                          employees={sortedEmployees || []}
                           instances={instancesByEmp}
                           slice={m}
                           maxDays={maxDays}
                           periodStart={start}
                           periodEnd={end}
                           onReorder={onReorder}
+                          onEmployeeClick={setEditingEmployeeId}
+                          onEmployeeEdit={setEditingEmployeeId}
+                          onEmployeeDelete={(employeeId) => {
+                            if (window.confirm('Вы уверены, что хотите удалить этого сотрудника?')) {
+                              deleteEmployeeMutation.mutate(employeeId);
+                              // Удаляем из порядка
+                              setEmployeeOrder(prev => prev.filter(id => id !== employeeId));
+                            }
+                          }}
+                          onEmployeeClone={(employeeId) => cloneEmployeeMutation.mutate(employeeId)}
+                          onEmployeeMoveUp={handleEmployeeMoveUp}
+                          onEmployeeMoveDown={handleEmployeeMoveDown}
+                          onEmployeeAssignProfile={handleAssignProfile}
+                          onEmployeePatternOffsetChange={handleEmployeePatternOffsetChange}
+                          onEmployeeAdd={handleAddEmployee}
+                          shiftProfiles={shiftProfiles?.map(p => ({ id: p.id, name: p.name })) || []}
+                          employeeProfiles={Object.fromEntries(
+                            (employees || []).map(emp => [emp.id, emp.shiftProfileId || null])
+                          )}
                           renderChip={(t, idx, status) => renderChip(t)}
                           baseCycleStart={start}
                           shiftTypes={allShiftTypes}
@@ -650,6 +954,10 @@ export default function MainSchedule() {
                           onUpsertShift={upsertDailyShift}
                           onCreateSwapRequest={createSwapRequest}
                           onSelectionChange={setSelectedSlotForSwap}
+                          patternStartOffset={schedule.patternStartOffset || 0}
+                          onPatternOffsetChange={handlePatternOffsetChange}
+                          scheduleId={scheduleId}
+                          maxCycleLength={maxCycleLength}
                         />
                       </div>
                     ))}
@@ -700,6 +1008,31 @@ export default function MainSchedule() {
                   onClose={() => setIsSwapRequestsModalOpen(false)}
                   scheduleId={scheduleId}
                 />
+                <EditEmployeeModal
+                  isOpen={!!editingEmployeeId}
+                  onClose={() => setEditingEmployeeId(null)}
+                  onSave={async (data) => {
+                    if (editingEmployeeId === 'new') {
+                      await createEmployeeMutation.mutateAsync(data);
+                    } else {
+                      await updateEmployeeMutation.mutateAsync(data);
+                    }
+                  }}
+                  employee={editingEmployeeId && editingEmployeeId !== 'new' ? employees?.find(e => e.id === editingEmployeeId) : null}
+                  departments={schedule.departments || []}
+                  positions={positions || []}
+                  scheduleId={scheduleId}
+                  isLoading={createEmployeeMutation.isPending || updateEmployeeMutation.isPending}
+                />
+                <LaborViolationsModal
+                  isOpen={isLaborViolationsModalOpen}
+                  onClose={() => setIsLaborViolationsModalOpen(false)}
+                  scheduleId={scheduleId}
+                />
+                <LaborLawSettingsModal
+                  isOpen={isLaborSettingsOpen}
+                  onClose={() => setIsLaborSettingsOpen(false)}
+                />
               </>
             )}
           </>
@@ -713,6 +1046,12 @@ export default function MainSchedule() {
             </Button>
           </Card>
         )}
+
+        {/* Модалка настроек ТК РФ */}
+        <LaborLawSettingsModal
+          isOpen={isLaborSettingsOpen}
+          onClose={() => setIsLaborSettingsOpen(false)}
+        />
       </div>
     </MainLayout>
   );

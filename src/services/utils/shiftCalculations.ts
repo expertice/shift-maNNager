@@ -53,6 +53,17 @@ export function calculateShiftBreaks(
   const durationMinutes = calculateShiftDuration(startTime, endTime);
   const durationHours = durationMinutes / 60;
 
+  // Подготовим рабочую копию перерывов без дубликатов (по началу/концу)
+  const uniqueManualBreaks = manualBreaks.reduce<ShiftBreak[]>((acc, current) => {
+    const exists = acc.some(
+      (b) => b.startTime === current.startTime && b.endTime === current.endTime
+    );
+    if (!exists) {
+      acc.push(current);
+    }
+    return acc;
+  }, []);
+
   // Если смена меньше 12 часов, добавляем автоматический перерыв посередине
   if (durationHours < 12 && durationHours > 0) {
     const start = timeToMinutes(startTime);
@@ -76,12 +87,19 @@ export function calculateShiftBreaks(
       duration: 60, // 1 час = 60 минут
     };
 
-    // Возвращаем автоматический перерыв + ручные перерывы
-    return [automaticBreak, ...manualBreaks];
+    const existsInManual = uniqueManualBreaks.some(
+      (b) => b.startTime === automaticBreak.startTime && b.endTime === automaticBreak.endTime
+    );
+
+    if (!existsInManual) {
+      return [automaticBreak, ...uniqueManualBreaks];
+    }
+
+    return uniqueManualBreaks;
   }
 
   // Для смен >= 12 часов возвращаем только ручные перерывы
-  return manualBreaks;
+  return uniqueManualBreaks;
 }
 
 /**

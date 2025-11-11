@@ -204,8 +204,9 @@ export default function EmployeePatternRow({
         const selectionId = `${employeeId}-${dayIndex}`;
         const isSelected = selectedSlotId === selectionId;
 
-        // Получаем данные о типе смены из самой смены, если доступны
-        const shiftTypeFromShift = dailyShift?.shiftType ? {
+        // Получаем данные о типе смены из самой смены ТОЛЬКО если смена имеет статус 'modified' или 'cancelled'
+        // Для смен со статусом 'scheduled' не передаем данные, так как они должны браться из массива shiftTypes
+        const shiftTypeFromShift = (dailyShift?.shiftType && (dailyShift.status === 'modified' || dailyShift.status === 'cancelled')) ? {
           startTime: dailyShift.shiftType.startTime,
           endTime: dailyShift.shiftType.endTime,
           workingHours: typeof dailyShift.shiftType.workingHours === 'number' 

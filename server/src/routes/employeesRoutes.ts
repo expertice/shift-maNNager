@@ -24,6 +24,50 @@ router.get('/', employeesController.getEmployees);
 router.post('/', authorize('editor'), employeesController.createEmployee);
 
 /**
+ * POST /api/v1/schedules/:scheduleId/employees/bulk-placeholders
+ * Создать болванчиков-сотрудников (только editor/owner)
+ * Должен быть определен ПЕРЕД /:id, чтобы не перехватывался
+ */
+router.post(
+  '/bulk-placeholders',
+  authorize('editor'),
+  employeesController.createPlaceholders
+);
+
+/**
+ * PUT /api/v1/schedules/:scheduleId/employees/:id/assign-profile
+ * Назначить профиль смены сотруднику (только editor/owner)
+ * Должен быть определен ПЕРЕД /:id, чтобы не перехватывался
+ */
+router.put(
+  '/:id/assign-profile',
+  authorize('editor'),
+  employeesController.assignProfile
+);
+
+/**
+ * POST /api/v1/schedules/:scheduleId/employees/:id/generate-password
+ * Сгенерировать одноразовый пароль (только editor/owner)
+ * Должен быть определен ПЕРЕД /:id, чтобы не перехватывался
+ */
+router.post(
+  '/:id/generate-password',
+  authorize('editor'),
+  employeesController.generatePassword
+);
+
+/**
+ * POST /api/v1/schedules/:scheduleId/employees/:id/clone
+ * Клонировать сотрудника (только editor/owner)
+ * Должен быть определен ПЕРЕД /:id, чтобы не перехватывался
+ */
+router.post(
+  '/:id/clone',
+  authorize('editor'),
+  employeesController.cloneEmployee
+);
+
+/**
  * PUT /api/v1/schedules/:scheduleId/employees/:id
  * Обновить сотрудника (только editor/owner)
  */
@@ -34,26 +78,6 @@ router.put('/:id', authorize('editor'), employeesController.updateEmployee);
  * Удалить сотрудника (только editor/owner)
  */
 router.delete('/:id', authorize('editor'), employeesController.deleteEmployee);
-
-/**
- * POST /api/v1/schedules/:scheduleId/employees/:id/generate-password
- * Сгенерировать одноразовый пароль (только editor/owner)
- */
-router.post(
-  '/:id/generate-password',
-  authorize('editor'),
-  employeesController.generatePassword
-);
-
-/**
- * POST /api/v1/schedules/:scheduleId/employees/bulk-placeholders
- * Создать болванчиков-сотрудников (только editor/owner)
- */
-router.post(
-  '/bulk-placeholders',
-  authorize('editor'),
-  employeesController.createPlaceholders
-);
 
 export default router;
 

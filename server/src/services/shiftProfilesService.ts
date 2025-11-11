@@ -50,6 +50,7 @@ export interface UpdateShiftPatternData {
 }
 
 export interface UpdateShiftProfileData {
+  scheduleId: string;
   name: string;
   description?: string | null;
   shiftTypes: UpdateShiftTypeData[];
@@ -58,10 +59,13 @@ export interface UpdateShiftProfileData {
 }
 
 /**
- * Получить все профили смен
+ * Получить все профили смен для конкретного расписания
  */
-export async function getAllShiftProfiles(): Promise<ShiftProfileWithDetails[]> {
+export async function getShiftProfilesBySchedule(scheduleId: string): Promise<ShiftProfileWithDetails[]> {
   return prisma.shiftProfile.findMany({
+    where: {
+      scheduleId,
+    },
     include: {
       shiftTypes: {
         orderBy: {
@@ -82,9 +86,14 @@ export async function getAllShiftProfiles(): Promise<ShiftProfileWithDetails[]> 
 
 /**
  * Получить профиль смены по ID
+ * @param id ID профиля
+ * @param scheduleId Опциональный ID расписания для проверки принадлежности
  */
-export async function getShiftProfileById(id: string): Promise<ShiftProfileWithDetails | null> {
-  return prisma.shiftProfile.findUnique({
+export async function getShiftProfileById(
+  id: string, 
+  scheduleId?: string
+): Promise<ShiftProfileWithDetails | null> {
+  const profile = await prisma.shiftProfile.findUnique({
     where: { id },
     include: {
       shiftTypes: {
@@ -99,6 +108,13 @@ export async function getShiftProfileById(id: string): Promise<ShiftProfileWithD
       },
     },
   });
+
+  // Если указан scheduleId, проверяем принадлежность профиля к расписанию
+  if (profile && scheduleId && profile.scheduleId !== scheduleId) {
+    return null;
+  }
+
+  return profile;
 }
 
 /**
@@ -110,6 +126,18 @@ export async function generateShiftsFromProfile(
 ): Promise<{ count: number; shifts: BulkShiftData[] }> {
   const { scheduleId, shiftProfileId, employeeIds, startDate, endDate } = params;
 
+  // Получаем расписание для доступа к patternStartOffset
+  const schedule = await prisma.schedule.findUnique({
+    where: { id: scheduleId },
+    select: { patternStartOffset: true },
+  });
+
+  if (!schedule) {
+    throw new Error('Schedule not found');
+  }
+
+  const patternStartOffset = schedule.patternStartOffset ?? 0;
+
   // Получаем профиль с деталями
   const profile = await getShiftProfileById(shiftProfileId);
 
@@ -117,10 +145,10 @@ export async function generateShiftsFromProfile(
     throw new Error('Shift profile not found');
   }
 
-  // Проверяем минимальное количество сотрудников
+  // Предупреждаем о минимальном количестве сотрудников, но не блокируем генерацию
   if (employeeIds.length < profile.minEmployees) {
-    throw new Error(
-      `Insufficient employees. Minimum required: ${profile.minEmployees}, provided: ${employeeIds.length}`
+    console.warn(
+      `[generateShifts] Warning: Fewer employees than recommended. Minimum: ${profile.minEmployees}, provided: ${employeeIds.length}`
     );
   }
 
@@ -212,22 +240,102 @@ export async function generateShiftsFromProfile(
 
   const employeesWithoutInstance = employeesToProcess.filter((id) => !employeeIdToInstance.has(id));
   if (employeesWithoutInstance.length > 0) {
-    // При первом назначении распределяем паттерны циклически по переданному порядку,
-    // фиксируя смещение startIndex только один раз.
+    // Получаем всех сотрудников с назначенным этим профилем для циклического распределения паттернов
+    const allEmployeesWithProfile = await prisma.employee.findMany({
+      where: {
+        scheduleId,
+        shiftProfileId: shiftProfileId,
+      },
+      orderBy: { id: 'asc' }, // Сортируем по ID для стабильности
+      select: { id: true },
+    });
+    
+    // Получаем все существующие экземпляры паттернов для сотрудников с этим профилем
+    // чтобы определить, какие паттерны уже используются
+    const allInstancesForProfile = await prisma.rosterPatternInstance.findMany({
+      where: {
+        scheduleId,
+        employeeId: { in: allEmployeesWithProfile.map(emp => emp.id) },
+        pattern: {
+          shiftProfileId: shiftProfileId,
+        },
+      },
+      include: {
+        pattern: true,
+      },
+      orderBy: { createdAt: 'asc' }, // Сортируем по дате создания для правильного порядка
+    });
+    
+    // Создаем карту: employeeId -> patternId для существующих экземпляров
+    const existingPatternMap = new Map<string, string>();
+    allInstancesForProfile.forEach(instance => {
+      if (instance.patternId) {
+        existingPatternMap.set(instance.employeeId, instance.patternId);
+      }
+    });
+    
+    // Определяем, какие паттерны уже используются (считаем по паттернам, не по сотрудникам)
+    const usedPatternIndices = new Set<number>();
+    allInstancesForProfile.forEach(instance => {
+      if (instance.pattern) {
+        const patternIndex = profile.patterns.findIndex(p => p.id === instance.patternId);
+        if (patternIndex >= 0) {
+          usedPatternIndices.add(patternIndex);
+        }
+      }
+    });
+    
+    // Определяем последний использованный паттерн по дате создания
+    // Находим самый новый экземпляр паттерна среди всех существующих
+    let lastUsedPatternIndex: number | null = null;
+    if (allInstancesForProfile.length > 0) {
+      // Сортируем все экземпляры по дате создания (от старых к новым)
+      const sortedInstances = [...allInstancesForProfile].sort(
+        (a, b) => a.createdAt.getTime() - b.createdAt.getTime()
+      );
+      
+      // Берем последний экземпляр (самый новый по дате создания)
+      const lastInstance = sortedInstances[sortedInstances.length - 1];
+      if (lastInstance.patternId) {
+        const foundIndex = profile.patterns.findIndex(p => p.id === lastInstance.patternId);
+        if (foundIndex >= 0) {
+          lastUsedPatternIndex = foundIndex;
+        }
+      }
+    }
+    
+    // При первом назначении распределяем паттерны циклически на основе уже существующих назначений
     const toCreate: Parameters<typeof prisma.rosterPatternInstance.create>[0][] = [];
-    for (let i = 0; i < employeesToProcess.length; i++) {
-      const employeeId = employeesToProcess[i];
-      if (employeeIdToInstance.has(employeeId)) continue;
-      const patternIndex = i % profile.patterns.length;
+    for (const employeeId of employeesWithoutInstance) {
+      // Если у сотрудника уже есть экземпляр паттерна (не должен попасть сюда, но на всякий случай)
+      if (existingPatternMap.has(employeeId)) {
+        continue; // Пропускаем, экземпляр уже существует
+      }
+      
+      // Определяем следующий паттерн из цикла
+      let patternIndex: number;
+      if (lastUsedPatternIndex !== null) {
+        // Если есть последний использованный паттерн, назначаем следующий по циклу
+        patternIndex = (lastUsedPatternIndex + 1) % profile.patterns.length;
+      } else {
+        // Если паттернов еще не было назначено, начинаем с первого (индекс 0)
+        patternIndex = 0;
+      }
+      
       const pattern = profile.patterns[patternIndex];
       const sequence = pattern.sequence as (string | null)[];
+      
+      // Обновляем lastUsedPatternIndex для следующего сотрудника
+      lastUsedPatternIndex = patternIndex;
+      
+      // При создании новых экземпляров всегда начинаем с первого дня (startIndex = 0)
+      // Смещение применяется только через кнопки в ростере (updatePatternOffset)
       toCreate.push({
         data: {
           scheduleId,
           employeeId,
           patternId: pattern.id,
-          // Смещение по циклу закрепляем в startIndex, чтобы следующий месяц продолжался корректно
-          startIndex: 0,
+          startIndex: 0, // Всегда начинаем с первого дня при генерации
           sequence,
         },
       });
@@ -247,6 +355,7 @@ export async function generateShiftsFromProfile(
 
   // Обновляем существующие экземпляры, если профиль/паттерн изменился,
   // чтобы UI (ростер) показывал актуальную последовательность
+  // Также обновляем startIndex до текущего patternStartOffset из расписания
   const updates: Parameters<typeof prisma.rosterPatternInstance.update>[0][] = [];
   for (let i = 0; i < employeesToProcess.length; i++) {
     const employeeId = employeesToProcess[i];
@@ -257,13 +366,16 @@ export async function generateShiftsFromProfile(
     if (currentInstance) {
       const needsPatternChange = currentInstance.patternId !== pattern.id;
       const needsSequenceChange = JSON.stringify(currentInstance.sequence) !== JSON.stringify(newSequence);
-      if (needsPatternChange || needsSequenceChange) {
+      
+      // При генерации смен всегда сбрасываем startIndex к 0 (начинаем с первого дня)
+      // Смещение применяется только через кнопки в ростере (updatePatternOffset)
+      if (needsPatternChange || needsSequenceChange || currentInstance.startIndex !== 0) {
         updates.push({
           where: { id: currentInstance.id },
           data: {
             patternId: pattern.id,
-            // сохраняем прежний startIndex, чтобы смещение цикла не сбивалось
             sequence: newSequence,
+            startIndex: 0, // При генерации всегда начинаем с первого дня
           },
         });
       }
@@ -320,6 +432,24 @@ export async function generateShiftsFromProfile(
 
   const count = await bulkCreateShifts(scheduleId, shifts);
 
+  // Обновляем shiftProfileId у сотрудников после успешной генерации
+  await prisma.employee.updateMany({
+    where: {
+      scheduleId,
+      id: { in: employeesToProcess },
+    },
+    data: {
+      shiftProfileId: shiftProfileId,
+    },
+  });
+
+  // При генерации смен сбрасываем смещение паттерна к 0
+  // Смещение применяется только через кнопки в ростере (updatePatternOffset)
+  await prisma.schedule.update({
+    where: { id: scheduleId },
+    data: { patternStartOffset: 0 },
+  });
+
   return {
     count,
     shifts,
@@ -371,6 +501,7 @@ export async function createShiftProfile(
     // Создаем профиль
     const newProfile = await tx.shiftProfile.create({
       data: {
+        scheduleId: data.scheduleId,
         name: data.name,
         description: data.description ?? null,
         cycleLength,
@@ -457,13 +588,26 @@ export async function updateShiftProfile(
   id: string,
   data: UpdateShiftProfileData
 ): Promise<ShiftProfileWithDetails> {
+  // Проверяем, что профиль принадлежит указанному расписанию
+  const existingProfile = await prisma.shiftProfile.findUnique({
+    where: { id },
+  });
+
+  if (!existingProfile) {
+    throw new Error('Shift profile not found');
+  }
+
+  if (existingProfile.scheduleId !== data.scheduleId) {
+    throw new Error('Shift profile does not belong to the specified schedule');
+  }
+
   // Вычисляем автоматически cycleLength и minEmployees
   const cycleLength = calculateCycleLength(data.patterns);
   const minEmployees = calculateMinEmployees(data.patterns);
 
   // Начинаем транзакцию для атомарного обновления
   return prisma.$transaction(async (tx) => {
-    // Обновляем основные поля профиля
+    // Обновляем основные поля профиля (scheduleId не меняется)
     const updatedProfile = await tx.shiftProfile.update({
       where: { id },
       data: {
@@ -637,7 +781,8 @@ export async function updateShiftProfile(
 export async function compareProfiles(
   profileIds: string[],
   startDate: Date,
-  endDate: Date
+  endDate: Date,
+  requestedEmployeeCount?: number
 ): Promise<CompareProfilesResponse> {
   // Валидация входных данных
   if (profileIds.length < 2) {
@@ -672,8 +817,9 @@ export async function compareProfiles(
     throw new Error('Некоторые профили не найдены');
   }
 
-  // Определяем максимальное количество сотрудников
+  // Определяем минимальное обязательное количество сотрудников (максимум по профилям)
   const maxEmployeeCount = Math.max(...profiles.map((p) => p.minEmployees));
+  const employeeCount = Math.max(maxEmployeeCount, requestedEmployeeCount ?? maxEmployeeCount);
 
   // Подготавливаем результаты сравнения
   const comparisons: ProfileComparisonResult[] = [];
@@ -693,8 +839,8 @@ export async function compareProfiles(
     const employeeMetrics: EmployeeProfileMetrics[] = [];
     const baseCycleStart = start;
 
-    // Для каждого сотрудника (от 1 до maxEmployeeCount)
-    for (let employeeNumber = 1; employeeNumber <= maxEmployeeCount; employeeNumber++) {
+    // Для каждого сотрудника (от 1 до employeeCount)
+    for (let employeeNumber = 1; employeeNumber <= employeeCount; employeeNumber++) {
       const shifts: BulkShiftData[] = [];
 
       // Определяем паттерн для этого сотрудника (циклически)
@@ -729,7 +875,24 @@ export async function compareProfiles(
 
       // Рассчитываем метрики для этого сотрудника
       const shiftsCount = calculateShiftsCount(shifts);
-      const totalHours = calculateTotalHours(shifts, profile.shiftTypes);
+      
+      // Подсчитываем количество смен каждого типа
+      const shiftTypeCounts: Record<string, number> = {};
+      shifts.forEach((shift) => {
+        if (shift.shiftTypeId) {
+          shiftTypeCounts[shift.shiftTypeId] = (shiftTypeCounts[shift.shiftTypeId] || 0) + 1;
+        }
+      });
+
+      // Рассчитываем общие часы: количество смен каждого типа * рабочие часы типа смены
+      let totalHours = 0;
+      Object.entries(shiftTypeCounts).forEach(([shiftTypeId, count]) => {
+        const shiftType = profile.shiftTypes.find((st) => st.id === shiftTypeId);
+        if (shiftType) {
+          totalHours += count * Number(shiftType.workingHours);
+        }
+      });
+
       const nightHours = calculateNightHours(shifts, profile.shiftTypes);
       const additionalMetrics = calculateAdditionalMetrics(shifts, profile.shiftTypes);
 
@@ -738,6 +901,7 @@ export async function compareProfiles(
         shiftsCount,
         totalHours,
         nightHours,
+        shiftTypeCounts,
         additionalMetrics,
       });
     }
@@ -790,11 +954,23 @@ export async function compareProfiles(
       description: profile.description,
     };
 
+    // Преобразуем типы смен для передачи в результат
+    const shiftTypesForComparison: ShiftTypeForVisualization[] = profile.shiftTypes.map((st) => ({
+      id: st.id,
+      name: st.name,
+      startTime: st.startTime,
+      endTime: st.endTime,
+      color: st.color || undefined,
+      workingHours: Number(st.workingHours),
+      nightHoursCount: st.nightHoursCount,
+    }));
+
     comparisons.push({
       profile: profileForComparison,
-      employeeCount: maxEmployeeCount,
+      employeeCount,
       employeeMetrics,
       visualizedPatterns,
+      shiftTypes: shiftTypesForComparison,
       periodStart: start,
       periodEnd: end,
     });
@@ -803,18 +979,35 @@ export async function compareProfiles(
   return {
     comparisons,
     maxEmployeeCount,
+    employeeCount,
   };
 }
 
 /**
  * Удалить профиль смены
  */
-export async function deleteShiftProfile(id: string): Promise<void> {
+export async function deleteShiftProfile(id: string, scheduleId: string): Promise<void> {
   console.log('[deleteShiftProfile] Attempting to delete profile:', id);
   
-  // Получаем все расписания, где этот профиль когда-либо использовался
+  // Проверяем, что профиль принадлежит указанному расписанию
+  const profile = await prisma.shiftProfile.findUnique({
+    where: { id },
+  });
+
+  if (!profile) {
+    throw new Error('Shift profile not found');
+  }
+
+  if (profile.scheduleId !== scheduleId) {
+    throw new Error('Shift profile does not belong to the specified schedule');
+  }
+  
+  // Получаем все назначения этого профиля в расписании
   const allAssignments = await prisma.scheduleShiftAssignment.findMany({
-    where: { shiftProfileId: id },
+    where: { 
+      shiftProfileId: id,
+      scheduleId: scheduleId,
+    },
     include: {
       schedule: {
         select: { 
@@ -831,20 +1024,16 @@ export async function deleteShiftProfile(id: string): Promise<void> {
   console.log('[deleteShiftProfile] Found historical assignments:', allAssignments.length);
 
   if (allAssignments.length > 0) {
-    // Группируем по scheduleId и проверяем только последнее назначение для каждого расписания
-    const scheduleIds = [...new Set(allAssignments.map((a) => a.scheduleId))];
-    const activeUsages: string[] = [];
-
-    for (const scheduleId of scheduleIds) {
-      // Получаем последнее назначение для этого расписания
+    // Проверяем, является ли этот профиль последним использованным в расписании
       const latestAssignment = await prisma.scheduleShiftAssignment.findFirst({
         where: {
-          scheduleId,
+        scheduleId: scheduleId,
         },
         include: {
           schedule: {
             select: {
               name: true,
+              status: true,
             },
           },
         },
@@ -854,18 +1043,19 @@ export async function deleteShiftProfile(id: string): Promise<void> {
         ],
       });
 
-      // Если последнее назначение использует этот профиль - профиль активен
-      if (latestAssignment && latestAssignment.shiftProfileId === id) {
-        activeUsages.push(latestAssignment.schedule.name);
-      }
-    }
+    const ACTIVE_SCHEDULE_STATUSES: Array<'draft' | 'published'> = ['published'];
 
-    if (activeUsages.length > 0) {
-      const scheduleNames = activeUsages.join(', ');
-      console.log('[deleteShiftProfile] Profile is ACTIVELY used by schedules:', scheduleNames);
+    // Если последнее назначение использует этот профиль и расписание активно - профиль активен
+      if (
+        latestAssignment &&
+        latestAssignment.shiftProfileId === id &&
+        latestAssignment.schedule.status &&
+        ACTIVE_SCHEDULE_STATUSES.includes(latestAssignment.schedule.status)
+      ) {
+      console.log('[deleteShiftProfile] Profile is ACTIVELY used by schedule:', latestAssignment.schedule.name);
       throw new Error(
-        `Невозможно удалить профиль. Он активно используется в расписаниях: ${scheduleNames}. ` +
-        `Сначала примените другой профиль к этим расписаниям.`
+        `Невозможно удалить профиль. Он активно используется в расписании: ${latestAssignment.schedule.name}. ` +
+        `Сначала примените другой профиль к этому расписанию.`
       );
     }
 
@@ -884,14 +1074,17 @@ export async function deleteShiftProfile(id: string): Promise<void> {
 }
 
 /**
- * Получить информацию об использовании профиля в расписаниях
+ * Получить информацию об использовании профиля в расписании
+ * Профиль теперь привязан к одному расписанию, поэтому просто возвращаем количество применений
  */
 export async function getProfileUsage(id: string): Promise<{
   isUsed: boolean;
-  schedules: Array<{ id: string; name: string; assignmentCount: number }>;
+  assignmentCount: number;
+  scheduleId: string | null;
+  scheduleName: string | null;
 }> {
-  const assignments = await prisma.scheduleShiftAssignment.findMany({
-    where: { shiftProfileId: id },
+  const profile = await prisma.shiftProfile.findUnique({
+    where: { id },
     include: {
       schedule: {
         select: {
@@ -902,33 +1095,24 @@ export async function getProfileUsage(id: string): Promise<{
     },
   });
 
-  // Группируем по расписаниям
-  const scheduleMap = new Map<string, { id: string; name: string; count: number }>();
-  
-  assignments.forEach((assignment) => {
-    if (assignment.schedule) {
-      const scheduleId = assignment.schedule.id;
-      if (scheduleMap.has(scheduleId)) {
-        scheduleMap.get(scheduleId)!.count++;
-      } else {
-        scheduleMap.set(scheduleId, {
-          id: assignment.schedule.id,
-          name: assignment.schedule.name,
-          count: 1,
-        });
-      }
-    }
-  });
+  if (!profile) {
+    return {
+      isUsed: false,
+      assignmentCount: 0,
+      scheduleId: null,
+      scheduleName: null,
+    };
+  }
 
-  const schedules = Array.from(scheduleMap.values()).map((s) => ({
-    id: s.id,
-    name: s.name,
-    assignmentCount: s.count,
-  }));
+  const assignments = await prisma.scheduleShiftAssignment.findMany({
+    where: { shiftProfileId: id },
+  });
 
   return {
     isUsed: assignments.length > 0,
-    schedules,
+    assignmentCount: assignments.length,
+    scheduleId: profile.scheduleId,
+    scheduleName: profile.schedule.name,
   };
 }
 
@@ -945,9 +1129,10 @@ export async function cloneShiftProfile(id: string): Promise<ShiftProfileWithDet
 
   // Создаем клон через транзакцию
   return prisma.$transaction(async (tx) => {
-    // Создаем новый профиль
+    // Создаем новый профиль (клон остается в том же расписании)
     const newProfile = await tx.shiftProfile.create({
       data: {
+        scheduleId: sourceProfile.scheduleId,
         name: `${sourceProfile.name} (копия)`,
         description: sourceProfile.description,
         cycleLength: sourceProfile.cycleLength,
@@ -1017,6 +1202,110 @@ export async function cloneShiftProfile(id: string): Promise<ShiftProfileWithDet
     }
 
     return result;
+  });
+}
+
+/**
+ * Обновить смещение паттерна для всех экземпляров в расписании
+ * @param scheduleId ID расписания
+ * @param offsetDelta Изменение смещения (положительное = вправо, отрицательное = влево)
+ */
+export async function updatePatternOffset(
+  scheduleId: string,
+  offsetDelta: number
+): Promise<void> {
+  // Получаем все экземпляры паттернов для расписания
+  const instances = await prisma.rosterPatternInstance.findMany({
+    where: { scheduleId },
+    include: {
+      pattern: true,
+    },
+  });
+
+  if (instances.length === 0) {
+    return;
+  }
+
+  // Получаем текущее значение patternStartOffset из расписания
+  const schedule = await prisma.schedule.findUnique({
+    where: { id: scheduleId },
+    select: { patternStartOffset: true },
+  });
+
+  const currentOffset = schedule?.patternStartOffset ?? 0;
+  const newOffset = Math.max(0, currentOffset + offsetDelta);
+
+  // Обновляем startIndex для каждого экземпляра с учетом длины цикла
+  const updates = instances.map((instance) => {
+    if (!instance.pattern) {
+      return null;
+    }
+
+    const cycleLength = instance.pattern.cycleLength;
+    // Вычисляем новый startIndex с учетом циклического перехода
+    // Если offsetDelta отрицательный (смещение влево), переходим к концу цикла
+    let newStartIndex = (instance.startIndex + offsetDelta) % cycleLength;
+    if (newStartIndex < 0) {
+      newStartIndex = cycleLength + newStartIndex;
+    }
+
+    return prisma.rosterPatternInstance.update({
+      where: { id: instance.id },
+      data: { startIndex: newStartIndex },
+    });
+  }).filter((update): update is NonNullable<typeof update> => update !== null);
+
+  // Обновляем patternStartOffset в расписании и экземпляры в одной транзакции
+  await prisma.$transaction([
+    ...updates,
+    prisma.schedule.update({
+      where: { id: scheduleId },
+      data: { patternStartOffset: newOffset },
+    }),
+  ]);
+}
+
+/**
+ * Обновить смещение паттерна для конкретного сотрудника
+ * @param scheduleId ID расписания
+ * @param employeeId ID сотрудника
+ * @param offsetDelta Изменение смещения (положительное = вправо, отрицательное = влево)
+ */
+export async function updateEmployeePatternOffset(
+  scheduleId: string,
+  employeeId: string,
+  offsetDelta: number
+): Promise<void> {
+  // Получаем экземпляр паттерна для сотрудника
+  const instance = await prisma.rosterPatternInstance.findFirst({
+    where: {
+      scheduleId,
+      employeeId,
+    },
+    include: {
+      pattern: true,
+    },
+  });
+
+  if (!instance || !instance.pattern) {
+    throw new Error('Pattern instance not found for employee');
+  }
+
+  const cycleLength = instance.pattern.cycleLength;
+  if (cycleLength <= 0) {
+    throw new Error('Pattern has invalid cycle length');
+  }
+
+  // Вычисляем новый startIndex с учетом циклического перехода
+  let newStartIndex = (instance.startIndex + offsetDelta) % cycleLength;
+  if (newStartIndex < 0) {
+    newStartIndex = cycleLength + newStartIndex;
+  }
+
+  // Обновляем startIndex для экземпляра паттерна
+  await prisma.rosterPatternInstance.update({
+    where: { id: instance.id },
+    data: { startIndex: newStartIndex },
   });
 }
 

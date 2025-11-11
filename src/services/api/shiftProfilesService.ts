@@ -13,10 +13,12 @@ export interface GenerateShiftsRequest {
  */
 export const shiftProfilesService = {
   /**
-   * Получить все профили смен
+   * Получить все профили смен для конкретного расписания
    */
-  getShiftProfiles: async (): Promise<ShiftProfile[]> => {
-    const response = await apiClient.get<ApiResponse<ShiftProfile[]>>('/shift-profiles');
+  getShiftProfiles: async (scheduleId: string): Promise<ShiftProfile[]> => {
+    const response = await apiClient.get<ApiResponse<ShiftProfile[]>>(
+      `/shift-profiles?scheduleId=${scheduleId}`
+    );
     if (!response.data.success || !response.data.data) {
       throw new Error(response.data.error || 'Ошибка загрузки профилей смен');
     }
@@ -26,8 +28,11 @@ export const shiftProfilesService = {
   /**
    * Получить профиль смены по ID
    */
-  getShiftProfileById: async (id: string): Promise<ShiftProfile> => {
-    const response = await apiClient.get<ApiResponse<ShiftProfile>>(`/shift-profiles/${id}`);
+  getShiftProfileById: async (id: string, scheduleId?: string): Promise<ShiftProfile> => {
+    const url = scheduleId 
+      ? `/shift-profiles/${id}?scheduleId=${scheduleId}`
+      : `/shift-profiles/${id}`;
+    const response = await apiClient.get<ApiResponse<ShiftProfile>>(url);
     if (!response.data.success || !response.data.data) {
       throw new Error(response.data.error || 'Ошибка загрузки профиля смены');
     }
@@ -131,9 +136,9 @@ export const shiftProfilesService = {
   /**
    * Удалить профиль смены
    */
-  deleteShiftProfile: async (id: string): Promise<void> => {
+  deleteShiftProfile: async (id: string, scheduleId: string): Promise<void> => {
     const response = await apiClient.delete<ApiResponse<{ message: string }>>(
-      `/shift-profiles/${id}`
+      `/shift-profiles/${id}?scheduleId=${scheduleId}`
     );
     if (!response.data.success) {
       throw new Error(response.data.error || 'Ошибка удаления профиля смены');
@@ -151,6 +156,39 @@ export const shiftProfilesService = {
       throw new Error(response.data.error || 'Ошибка клонирования профиля смены');
     }
     return response.data.data;
+  },
+
+  /**
+   * Обновить смещение паттерна для всех экземпляров в расписании
+   */
+  updatePatternOffset: async (
+    scheduleId: string,
+    offsetDelta: number
+  ): Promise<void> => {
+    const response = await apiClient.post<ApiResponse<{ message: string }>>(
+      `/shift-profiles/update-pattern-offset`,
+      { scheduleId, offsetDelta }
+    );
+    if (!response.data.success) {
+      throw new Error(response.data.error || 'Ошибка обновления смещения паттерна');
+    }
+  },
+
+  /**
+   * Обновить смещение паттерна для конкретного сотрудника
+   */
+  updateEmployeePatternOffset: async (
+    scheduleId: string,
+    employeeId: string,
+    offsetDelta: number
+  ): Promise<void> => {
+    const response = await apiClient.post<ApiResponse<{ message: string }>>(
+      `/shift-profiles/update-employee-pattern-offset`,
+      { scheduleId, employeeId, offsetDelta }
+    );
+    if (!response.data.success) {
+      throw new Error(response.data.error || 'Ошибка обновления смещения паттерна сотрудника');
+    }
   },
 };
 
