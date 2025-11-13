@@ -291,6 +291,23 @@ export interface VacationRules {
   scheduleId: string;
   availableDays: number;
   minContinuousDays: number; // Минимум 14 дней согласно ТК РФ
+  maxConcurrentEmployees: number;
+}
+
+/**
+ * Выделенные дни отпуска для сотрудника
+ */
+export interface EmployeeVacationAllocation {
+  id: string;
+  scheduleId: string;
+  employeeId: string;
+  year: number;
+  allocatedDays: number;
+  employee?: {
+    id: string;
+    fullName: string;
+    tabNumber: string | null;
+  };
 }
 
 /**

@@ -1,30 +1,15 @@
 import React, { useState, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { MainLayout, SidebarIcons } from '@components/layout';
-import {
-  Button,
-  Card,
-  Spinner,
-  Modal,
-  Input,
-  Select,
-  Badge,
-} from '@components/common';
-import { vacationsService, schedulesService, employeesService } from '@services/api';
+import { Button, Spinner, Modal, Select } from '@components/common';
+import classNames from 'classnames';
+import { schedulesService, employeesService, shiftsService, vacationsService, shiftProfilesService } from '@services/api';
 import { useRealtime } from '@hooks/useRealtime';
-import { Vacation, Employee } from '@types';
-import {
-  format,
-  startOfMonth,
-  endOfMonth,
-  eachDayOfInterval,
-  isSameDay,
-  isWithinInterval,
-  addDays,
-  subDays,
-} from 'date-fns';
-import { ru } from 'date-fns/locale';
+import { Employee, Shift } from '@types';
+import { parseISO, startOfDay, endOfDay } from 'date-fns';
+import VacationScheduler from '@components/vacations/VacationScheduler';
+import VacationSettingsPanel from '@components/vacations/VacationSettingsPanel';
 
 /**
  * Страница режима отпусков
@@ -33,16 +18,10 @@ export default function VacationMode() {
   const { scheduleId } = useParams<{ scheduleId: string }>();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const [selectedMonth, setSelectedMonth] = useState<Date>(new Date());
-  const [selectedEmployee, setSelectedEmployee] = useState<string>('');
-  const [selectionStart, setSelectionStart] = useState<Date | null>(null);
-  const [selectionEnd, setSelectionEnd] = useState<Date | null>(null);
-  const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
-  const [vacationData, setVacationData] = useState<{
-    employeeId: string;
-    startDate: string;
-    endDate: string;
-  } | null>(null);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isHelpOpen, setIsHelpOpen] = useState(false);
+  const [viewMode, setViewMode] = useState<'compact' | 'roster'>('compact');
+  const [selectedEmployeeId, setSelectedEmployeeId] = useState<string>('');
 
   if (!scheduleId) {
     return <div>Ошибка: не указан ID расписания</div>;
@@ -69,108 +48,103 @@ export default function VacationMode() {
     enabled: !!scheduleId,
   });
 
+  // Загрузка смен для отображения
+  const { data: shiftsData } = useQuery({
+    queryKey: ['shifts', scheduleId, schedule?.startDate, schedule?.endDate],
+    queryFn: () => {
+      if (!schedule) return Promise.resolve({ items: [], total: 0, page: 1, pageSize: 0, totalPages: 0 });
+      
+      const startDate = typeof schedule.startDate === 'string' 
+        ? parseISO(schedule.startDate) 
+        : new Date(schedule.startDate);
+      const endDate = typeof schedule.endDate === 'string'
+        ? parseISO(schedule.endDate)
+        : new Date(schedule.endDate);
+      
+      const start = startOfDay(startDate);
+      const end = endOfDay(endDate);
+      
+      return shiftsService.getShifts(scheduleId, {
+        startDate: start.toISOString(),
+        endDate: end.toISOString(),
+        limit: 10000,
+      });
+    },
+    enabled: !!scheduleId && !!schedule,
+  });
+
+  // Загрузка профилей смен для получения цветов
+  const { data: shiftProfiles } = useQuery({
+    queryKey: ['shiftProfiles', scheduleId],
+    queryFn: () => scheduleId ? shiftProfilesService.getShiftProfiles(scheduleId) : Promise.resolve([]),
+    enabled: !!scheduleId,
+  });
+
   // Real-time обновления
   useRealtime(scheduleId, () => {
     queryClient.invalidateQueries({ queryKey: ['vacations', scheduleId] });
+    queryClient.invalidateQueries({ queryKey: ['shifts', scheduleId] });
   });
 
-  // Создание отпуска
-  const createMutation = useMutation({
-    mutationFn: (data: {
-      employeeId: string;
-      startDate: string;
-      endDate: string;
-      status?: 'approved' | 'pending';
-    }) => vacationsService.createVacation(scheduleId, data),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['vacations', scheduleId] });
-      setIsCreateModalOpen(false);
-      setVacationData(null);
-      setSelectionStart(null);
-      setSelectionEnd(null);
-    },
-  });
-
-  // Удаление отпуска
-  const deleteMutation = useMutation({
-    mutationFn: (vacationId: string) => vacationsService.deleteVacation(scheduleId, vacationId),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['vacations', scheduleId] });
-    },
-  });
-
-  // Получаем даты месяца для отображения
-  const monthStart = startOfMonth(selectedMonth);
-  const monthEnd = endOfMonth(selectedMonth);
-  const monthDays = eachDayOfInterval({ start: monthStart, end: monthEnd });
-
-  // Группируем отпуска по датам и сотрудникам
-  const vacationsByDate = useMemo(() => {
-    const map = new Map<string, Vacation[]>();
-    vacations?.forEach((vacation) => {
-      const dates = eachDayOfInterval({
-        start: new Date(vacation.startDate),
-        end: new Date(vacation.endDate),
-      });
-      dates.forEach((date) => {
-        const key = format(date, 'yyyy-MM-dd');
-        if (!map.has(key)) {
-          map.set(key, []);
-        }
-        map.get(key)!.push(vacation);
-      });
+  // Преобразуем смены в Map для быстрого доступа
+  const shiftsByDateAndEmployee = useMemo(() => {
+    if (!shiftsData?.items) return new Map<string, Shift>();
+    
+    const map = new Map<string, Shift>();
+    shiftsData.items.forEach(shift => {
+      const dateStr = typeof shift.date === 'string' 
+        ? shift.date.split('T')[0] 
+        : new Date(shift.date).toISOString().split('T')[0];
+      const key = `${dateStr}-${shift.employeeId}`;
+      map.set(key, shift);
     });
     return map;
-  }, [vacations]);
+  }, [shiftsData]);
 
-  const getVacationsForDate = (date: Date): Vacation[] => {
-    const key = format(date, 'yyyy-MM-dd');
-    return vacationsByDate.get(key) || [];
-  };
+  // Получаем все типы смен из профилей
+  const shiftTypes = useMemo(() => {
+    if (!shiftProfiles) return [];
+    return shiftProfiles.flatMap(profile => 
+      (profile.shiftTypes || []).map(type => ({
+        id: type.id,
+        name: type.name,
+        color: type.color,
+      }))
+    );
+  }, [shiftProfiles]);
 
-  const handleDateClick = (date: Date, employeeId: string) => {
-    if (!selectedEmployee) {
-      setSelectedEmployee(employeeId);
-    }
+  // Преобразуем даты расписания
+  const scheduleStart = useMemo(() => {
+    if (!schedule) return new Date();
+    const date = typeof schedule.startDate === 'string' 
+      ? parseISO(schedule.startDate) 
+      : new Date(schedule.startDate);
+    return startOfDay(date);
+  }, [schedule]);
 
-    if (!selectionStart || selectionEnd) {
-      setSelectionStart(date);
-      setSelectionEnd(null);
-    } else if (selectionStart && !selectionEnd) {
-      const start = selectionStart < date ? selectionStart : date;
-      const end = selectionStart < date ? date : selectionStart;
-      setSelectionStart(start);
-      setSelectionEnd(end);
-      
-      // Открываем модальное окно для подтверждения
-      setVacationData({
-        employeeId: selectedEmployee || employeeId,
-        startDate: format(start, 'yyyy-MM-dd'),
-        endDate: format(end, 'yyyy-MM-dd'),
-      });
-      setIsCreateModalOpen(true);
-    }
-  };
-
-  const handleCreateVacation = () => {
-    if (vacationData) {
-      createMutation.mutate({
-        ...vacationData,
-        status: 'approved',
-      });
-    }
-  };
-
-  const isValidRange =
-    vacationData &&
-    vacationData.startDate &&
-    vacationData.endDate &&
-    new Date(vacationData.endDate) >= new Date(vacationData.startDate) &&
-    schedule &&
-    new Date(vacationData.startDate) >= new Date(schedule.startDate) &&
-    new Date(vacationData.endDate) <= new Date(schedule.endDate);
+  const scheduleEnd = useMemo(() => {
+    if (!schedule) return new Date();
+    const date = typeof schedule.endDate === 'string'
+      ? parseISO(schedule.endDate)
+      : new Date(schedule.endDate);
+    return endOfDay(date);
+  }, [schedule]);
 
   const isLoading = scheduleLoading || employeesLoading || vacationsLoading;
+
+  // Фильтруем только видимых сотрудников
+  const visibleEmployees = useMemo(() => {
+    if (!employees) return [];
+    return employees.filter(emp => !emp.isHidden);
+  }, [employees]);
+
+  // Опции для выпадающего списка сотрудников
+  const employeeOptions = useMemo(() => {
+    return visibleEmployees.map(emp => ({
+      value: emp.id,
+      label: `${emp.fullName}${emp.tabNumber ? ` (${emp.tabNumber})` : ''}`,
+    }));
+  }, [visibleEmployees]);
 
   const sidebarItems = [
     {
@@ -197,293 +171,222 @@ export default function VacationMode() {
     <MainLayout sidebarItems={sidebarItems}>
       <div className="p-8">
         <div className="flex items-center justify-between mb-6">
-          <div>
+          <div className="flex items-center gap-3">
             <h1 className="text-3xl font-bold">Режим отпусков</h1>
-            <p className="text-gray-600 mt-1">
-              Выберите сотрудника и отметьте даты отпуска на календаре
-            </p>
+            <div className="flex items-center gap-1">
+              <button
+                onClick={() => setIsHelpOpen(true)}
+                className="p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-full transition-colors"
+                title="Помощь"
+              >
+                <svg
+                  className="w-5 h-5"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                  xmlns="http://www.w3.org/2000/svg"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
+                  />
+                </svg>
+              </button>
+              <button
+                onClick={() => setIsSettingsOpen(true)}
+                className="p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-full transition-colors"
+                title="Настройки"
+              >
+                <svg
+                  className="w-5 h-5"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                  xmlns="http://www.w3.org/2000/svg"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"
+                  />
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"
+                  />
+                </svg>
+              </button>
+            </div>
           </div>
-          <Button onClick={() => navigate(`/schedule/${scheduleId}`)} variant="outline">
-            Назад к расписанию
-          </Button>
+          <div className="flex items-center gap-2">
+            {viewMode === 'compact' && (
+              <div className="flex items-center gap-3 px-4 py-2 border border-gray-300 rounded-lg bg-white">
+                <div className="w-64">
+                  <Select
+                    value={selectedEmployeeId}
+                    onChange={(e) => {
+                      setSelectedEmployeeId(e.target.value);
+                    }}
+                    options={employeeOptions}
+                    placeholder="Выберите сотрудника"
+                    className="border-2 border-gray-300 focus:border-primary focus:ring-primary"
+                  />
+                </div>
+                <div className="flex items-center gap-1 border-l border-gray-300 pl-3">
+                  <button
+                    onClick={() => {
+                      setViewMode('compact');
+                      setSelectedEmployeeId('');
+                    }}
+                    className={`px-3 py-1 rounded text-sm font-medium transition-colors ${
+                      viewMode === 'compact'
+                        ? 'bg-primary text-white'
+                        : 'text-gray-600 hover:bg-gray-100'
+                    }`}
+                  >
+                    Компактный календарь
+                  </button>
+                  <button
+                    onClick={() => {
+                      setViewMode('roster');
+                      setSelectedEmployeeId('');
+                    }}
+                    className={`px-3 py-1 rounded text-sm font-medium transition-colors ${
+                      viewMode === 'roster'
+                        ? 'bg-primary text-white'
+                        : 'text-gray-600 hover:bg-gray-100'
+                    }`}
+                  >
+                    Ростер
+                  </button>
+                </div>
+              </div>
+            )}
+            {viewMode === 'roster' && (
+              <div className="flex items-center gap-1 px-4 py-2 border border-gray-300 rounded-lg bg-white">
+                <button
+                  onClick={() => {
+                    setViewMode('compact');
+                    setSelectedEmployeeId('');
+                  }}
+                  className={`px-3 py-1 rounded text-sm font-medium transition-colors ${
+                    viewMode === 'compact'
+                      ? 'bg-primary text-white'
+                      : 'text-gray-600 hover:bg-gray-100'
+                  }`}
+                >
+                  Компактный календарь
+                </button>
+                <button
+                  onClick={() => {
+                    setViewMode('roster');
+                    setSelectedEmployeeId('');
+                  }}
+                  className={`px-3 py-1 rounded text-sm font-medium transition-colors ${
+                    viewMode === 'roster'
+                      ? 'bg-primary text-white'
+                      : 'text-gray-600 hover:bg-gray-100'
+                  }`}
+                >
+                  Ростер
+                </button>
+              </div>
+            )}
+            <Button onClick={() => navigate(`/schedule/${scheduleId}`)} variant="outline">
+              Назад к расписанию
+            </Button>
+          </div>
         </div>
 
-        {/* Выбор сотрудника */}
-        <Card className="mb-6 p-4">
-          <Select
-            label="Выберите сотрудника"
-            value={selectedEmployee}
-            onChange={(e) => {
-              setSelectedEmployee(e.target.value);
-              setSelectionStart(null);
-              setSelectionEnd(null);
-            }}
-            options={
-              employees?.map((emp) => ({
-                value: emp.id,
-                label: `${emp.fullName} (${emp.tabNumber})`,
-              })) || []
-            }
-            placeholder="Выберите сотрудника"
-          />
-        </Card>
-
-        {/* Календарь */}
+        {/* Загрузка */}
         {isLoading && (
           <div className="flex justify-center items-center py-12">
             <Spinner size="lg" />
           </div>
         )}
 
+        {/* Основной компонент расстановки отпусков */}
         {schedule && employees && !isLoading && (
-          <Card padding="none" className="overflow-x-auto">
-            <div className="p-4 border-b">
-              <div className="flex items-center justify-between">
-                <h3 className="text-lg font-semibold">
-                  {format(selectedMonth, 'MMMM yyyy', { locale: ru })}
-                </h3>
-                <div className="flex space-x-2">
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() => setSelectedMonth(subDays(startOfMonth(selectedMonth), 1))}
-                  >
-                    ←
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() => setSelectedMonth(new Date())}
-                  >
-                    Сегодня
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() => setSelectedMonth(addDays(endOfMonth(selectedMonth), 1))}
-                  >
-                    →
-                  </Button>
-                </div>
-              </div>
-            </div>
-
-            <table className="min-w-full">
-              <thead className="bg-gray-50">
-                <tr>
-                  <th className="sticky left-0 z-10 bg-gray-50 px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase border-r min-w-[200px]">
-                    Сотрудник
-                  </th>
-                  {monthDays.map((day) => (
-                    <th
-                      key={day.toISOString()}
-                      className="px-2 py-3 text-center text-xs font-medium text-gray-500 uppercase min-w-[60px]"
-                    >
-                      <div className="flex flex-col">
-                        <span className="font-bold">{format(day, 'd')}</span>
-                        <span className="text-xs font-normal text-gray-400">
-                          {format(day, 'EEE', { locale: ru })}
-                        </span>
-                      </div>
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody className="bg-white divide-y divide-gray-200">
-                {employees.map((employee) => (
-                  <tr key={employee.id} className="hover:bg-gray-50">
-                    <td className="sticky left-0 z-10 bg-white px-6 py-4 whitespace-nowrap border-r">
-                      <div className="text-sm font-medium">{employee.fullName}</div>
-                      <div className="text-xs text-gray-500">{employee.tabNumber}</div>
-                    </td>
-                    {monthDays.map((day) => {
-                      const dayVacations = getVacationsForDate(day).filter(
-                        (v) => v.employeeId === employee.id
-                      );
-                      const isInRange =
-                        selectionStart &&
-                        selectionEnd &&
-                        selectedEmployee === employee.id &&
-                        isWithinInterval(day, {
-                          start: selectionStart,
-                          end: selectionEnd,
-                        });
-                      const isStart =
-                        selectionStart &&
-                        isSameDay(day, selectionStart) &&
-                        selectedEmployee === employee.id;
-                      const isEnd =
-                        selectionEnd &&
-                        isSameDay(day, selectionEnd) &&
-                        selectedEmployee === employee.id;
-
-                      return (
-                        <td
-                          key={`${employee.id}-${day.toISOString()}`}
-                          className={`px-1 py-2 text-center border cursor-pointer ${
-                            dayVacations.length > 0
-                              ? 'bg-yellow-100 hover:bg-yellow-200'
-                              : isInRange
-                              ? 'bg-blue-100 hover:bg-blue-200'
-                              : isStart || isEnd
-                              ? 'bg-primary text-white hover:bg-primary-dark'
-                              : 'hover:bg-gray-100'
-                          }`}
-                          onClick={() => handleDateClick(day, employee.id)}
-                          title={
-                            dayVacations.length > 0
-                              ? `Отпуск: ${format(
-                                  new Date(dayVacations[0].startDate),
-                                  'dd.MM.yyyy'
-                                )} - ${format(
-                                  new Date(dayVacations[0].endDate),
-                                  'dd.MM.yyyy'
-                                )}`
-                              : 'Кликните для выбора отпуска'
-                          }
-                        >
-                          {dayVacations.length > 0 && (
-                            <div className="flex items-center justify-center">
-                              <Badge variant="warning" size="sm">
-                                Отпуск
-                              </Badge>
-                            </div>
-                          )}
-                          {(isStart || isEnd) && (
-                            <div className="text-xs font-bold">
-                              {isStart && selectionEnd ? 'Начало' : 'Конец'}
-                            </div>
-                          )}
-                        </td>
-                      );
-                    })}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </Card>
+          <VacationScheduler
+            scheduleId={scheduleId}
+            scheduleStart={scheduleStart}
+            scheduleEnd={scheduleEnd}
+            employees={employees}
+            vacations={vacations || []}
+            shiftsByDateAndEmployee={shiftsByDateAndEmployee}
+            shiftTypes={shiftTypes}
+            viewMode={viewMode}
+            selectedEmployeeId={selectedEmployeeId}
+            onViewModeChange={setViewMode}
+            onSelectedEmployeeChange={setSelectedEmployeeId}
+            onVacationCreated={() => {
+              queryClient.invalidateQueries({ queryKey: ['vacations', scheduleId] });
+            }}
+            onVacationDeleted={() => {
+              queryClient.invalidateQueries({ queryKey: ['vacations', scheduleId] });
+            }}
+          />
         )}
 
-        {/* Список существующих отпусков */}
-        {vacations && vacations.length > 0 && (
-          <Card className="mt-6">
-            <h3 className="text-lg font-semibold mb-4">Текущие отпуска</h3>
-            <div className="space-y-2">
-              {vacations.map((vacation) => {
-                const employee = employees?.find((e) => e.id === vacation.employeeId);
-                return (
-                  <div
-                    key={vacation.id}
-                    className="flex items-center justify-between p-3 bg-gray-50 rounded-lg"
-                  >
-                    <div>
-                      <div className="font-medium">
-                        {employee?.fullName || 'Неизвестный сотрудник'}
-                      </div>
-                      <div className="text-sm text-gray-600">
-                        {format(new Date(vacation.startDate), 'dd.MM.yyyy', { locale: ru })} -{' '}
-                        {format(new Date(vacation.endDate), 'dd.MM.yyyy', { locale: ru })}
-                      </div>
-                    </div>
-                    <div className="flex items-center space-x-2">
-                      <Badge
-                        variant={
-                          vacation.status === 'approved'
-                            ? 'success'
-                            : vacation.status === 'rejected'
-                            ? 'danger'
-                            : 'default'
-                        }
-                      >
-                        {vacation.status === 'approved'
-                          ? 'Утвержден'
-                          : vacation.status === 'rejected'
-                          ? 'Отклонен'
-                          : 'Ожидает'}
-                      </Badge>
-                      <Button
-                        size="sm"
-                        variant="danger"
-                        onClick={() => {
-                          if (window.confirm('Удалить этот отпуск?')) {
-                            deleteMutation.mutate(vacation.id);
-                          }
-                        }}
-                      >
-                        Удалить
-                      </Button>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </Card>
-        )}
-
-        {/* Модальное окно создания отпуска */}
+        {/* Модальное окно настроек */}
         <Modal
-          isOpen={isCreateModalOpen}
-          onClose={() => {
-            setIsCreateModalOpen(false);
-            setVacationData(null);
-            setSelectionStart(null);
-            setSelectionEnd(null);
-          }}
-          title="Создать отпуск"
+          isOpen={isSettingsOpen}
+          onClose={() => setIsSettingsOpen(false)}
+          title="Настройки отпусков"
+          size="xl"
         >
-          {vacationData && (
-            <div className="space-y-4">
-              <div className="p-4 bg-gray-50 rounded-lg">
-                <div className="text-sm space-y-2">
-                  <p>
-                    <strong>Сотрудник:</strong>{' '}
-                    {employees?.find((e) => e.id === vacationData.employeeId)?.fullName}
-                  </p>
-                  <p>
-                    <strong>Период:</strong> {format(new Date(vacationData.startDate), 'dd.MM.yyyy', { locale: ru })} -{' '}
-                    {format(new Date(vacationData.endDate), 'dd.MM.yyyy', { locale: ru })}
-                  </p>
-                  <p>
-                    <strong>Дней:</strong>{' '}
-                    {Math.ceil(
-                      (new Date(vacationData.endDate).getTime() -
-                        new Date(vacationData.startDate).getTime()) /
-                        (1000 * 60 * 60 * 24)
-                    ) + 1}
-                  </p>
-                </div>
-              </div>
-
-              {!isValidRange && (
-                <div className="p-3 bg-red-50 border border-red-200 rounded-lg">
-                  <p className="text-sm text-red-800">
-                    Выбранный период выходит за рамки расписания или некорректен
-                  </p>
-                </div>
-              )}
-
-              <div className="flex justify-end space-x-2">
-                <Button
-                  variant="outline"
-                  onClick={() => {
-                    setIsCreateModalOpen(false);
-                    setVacationData(null);
-                    setSelectionStart(null);
-                    setSelectionEnd(null);
-                  }}
-                >
-                  Отмена
-                </Button>
-                <Button
-                  onClick={handleCreateVacation}
-                  isLoading={createMutation.isPending}
-                  disabled={!isValidRange}
-                >
-                  Создать отпуск
-                </Button>
-              </div>
-            </div>
+          {employees && (
+            <VacationSettingsPanel
+              scheduleId={scheduleId}
+              employees={employees}
+              onClose={() => setIsSettingsOpen(false)}
+            />
           )}
+        </Modal>
+
+        {/* Модальное окно помощи */}
+        <Modal
+          isOpen={isHelpOpen}
+          onClose={() => setIsHelpOpen(false)}
+          title="Помощь по разделу 'Режим отпусков'"
+          size="lg"
+        >
+          <div className="space-y-4">
+            <div>
+              <h3 className="text-lg font-semibold mb-2">Как создать отпуск</h3>
+              <ul className="list-disc list-inside space-y-1 text-gray-700">
+                <li>В режиме "Ростер": кликните на дату начала отпуска для сотрудника, затем на дату конца отпуска.</li>
+                <li>В режиме "Компактный календарь": выберите сотрудника из списка, затем кликните на дату начала отпуска, затем на дату конца отпуска.</li>
+                <li>Отпуск создается автоматически после выбора конечной даты.</li>
+              </ul>
+            </div>
+            <div>
+              <h3 className="text-lg font-semibold mb-2">Как удалить отпуск</h3>
+              <p className="text-gray-700">
+                Кликните на дату, которая уже находится в отпуске. Отпуск будет удален без подтверждения.
+              </p>
+            </div>
+            <div>
+              <h3 className="text-lg font-semibold mb-2">Визуальные обозначения</h3>
+              <ul className="list-disc list-inside space-y-1 text-gray-700">
+                <li><span className="inline-block w-4 h-4 bg-yellow-100 border border-yellow-400 rounded mr-2"></span> - дни отпуска</li>
+                <li><span className="inline-block w-4 h-4 bg-blue-100 border border-blue-400 rounded mr-2"></span> - выбранный период</li>
+                <li><span className="inline-block w-4 h-4 border-2 border-blue-500 rounded mr-2"></span> - кликнутый день (контур)</li>
+                <li>👑 - день рождения сотрудника</li>
+                <li>Бледные цвета - смены сотрудника</li>
+              </ul>
+            </div>
+            <div>
+              <h3 className="text-lg font-semibold mb-2">Настройки</h3>
+              <p className="text-gray-700">
+                В настройках можно задать количество дней отпуска для каждого сотрудника, максимальное количество сотрудников в отпуске одновременно и минимальную длительность непрерывного отпуска.
+              </p>
+            </div>
+          </div>
         </Modal>
       </div>
     </MainLayout>

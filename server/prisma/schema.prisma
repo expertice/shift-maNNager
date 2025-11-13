@@ -28,22 +28,22 @@ model User {
 
 /// Схемы планирования
 model Schedule {
-  id                      String                 @id @default(uuid())
-  ownerUserId             String                 @map("owner_user_id")
-  name                    String
-  startDate               DateTime               @map("start_date")
-  endDate                 DateTime               @map("end_date")
-  status                  ScheduleStatus
-  reportingPeriod         ReportingPeriod?       @map("reporting_period") @default(month)
-  allowOvertimeWeekly     Boolean                @map("allow_overtime_weekly") @default(false)
-  allowOvertimeMonthly    Boolean                @map("allow_overtime_monthly") @default(false)
-  allowOvertimeQuarterly  Boolean                @map("allow_overtime_quarterly") @default(false)
-  patternStartOffset      Int?                   @map("pattern_start_offset") @default(0)
-  createdAt               DateTime               @default(now()) @map("created_at")
-  updatedAt               DateTime               @updatedAt @map("updated_at")
+  id                     String           @id @default(uuid())
+  ownerUserId            String           @map("owner_user_id")
+  name                   String
+  startDate              DateTime         @map("start_date")
+  endDate                DateTime         @map("end_date")
+  status                 ScheduleStatus
+  reportingPeriod        ReportingPeriod? @default(month) @map("reporting_period")
+  allowOvertimeWeekly    Boolean          @default(false) @map("allow_overtime_weekly")
+  allowOvertimeMonthly   Boolean          @default(false) @map("allow_overtime_monthly")
+  allowOvertimeQuarterly Boolean          @default(false) @map("allow_overtime_quarterly")
+  patternStartOffset     Int?             @default(0) @map("pattern_start_offset")
+  createdAt              DateTime         @default(now()) @map("created_at")
+  updatedAt              DateTime         @updatedAt @map("updated_at")
 
   // Relations
-  owner                  User                       @relation("ScheduleOwner", fields: [ownerUserId], references: [id])
+  owner                  User                         @relation("ScheduleOwner", fields: [ownerUserId], references: [id])
   permissions            SchedulePermission[]
   departments            Department[]
   positions              Position[]
@@ -52,6 +52,7 @@ model Schedule {
   conflicts              Conflict[]
   shiftAssignments       ScheduleShiftAssignment[]
   vacationRules          VacationRule?
+  vacationAllocations    EmployeeVacationAllocation[]
   calendarEvents         CalendarEvent[]
   workHourTracking       WorkHourTracking[]
   changeHistory          ChangeHistory[]
@@ -147,10 +148,10 @@ model Employee {
   createdAt      DateTime  @default(now()) @map("created_at")
 
   // Relations
-  schedule               Schedule                   @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
-  department             Department?                @relation(fields: [departmentId], references: [id], onDelete: Cascade)
-  position               Position?                  @relation(fields: [positionId], references: [id], onDelete: Cascade)
-  shiftProfile           ShiftProfile?              @relation(fields: [shiftProfileId], references: [id], onDelete: SetNull)
+  schedule               Schedule                     @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
+  department             Department?                  @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+  position               Position?                    @relation(fields: [positionId], references: [id], onDelete: Cascade)
+  shiftProfile           ShiftProfile?                @relation(fields: [shiftProfileId], references: [id], onDelete: SetNull)
   restrictions           EmployeeRestriction[]
   shifts                 DailyShift[]
   vacations              Vacation[]
@@ -161,10 +162,11 @@ model Employee {
   workHourTracking       WorkHourTracking[]
   changeHistory          ChangeHistory[]
   rosterPatternInstances RosterPatternInstance[]
-  swapRequestsInitiator  ShiftSwapRequest[]         @relation("SwapRequestInitiator")
-  swapRequestsFrom       ShiftSwapRequest[]         @relation("SwapRequestFrom")
-  swapRequestsTo         ShiftSwapRequest[]         @relation("SwapRequestTo")
+  swapRequestsInitiator  ShiftSwapRequest[]           @relation("SwapRequestInitiator")
+  swapRequestsFrom       ShiftSwapRequest[]           @relation("SwapRequestFrom")
+  swapRequestsTo         ShiftSwapRequest[]           @relation("SwapRequestTo")
   laborViolations        ScheduleLaborViolation[]
+  vacationAllocations    EmployeeVacationAllocation[]
 
   @@unique([scheduleId, tabNumber])
   @@unique([scheduleId, loginId])
@@ -202,7 +204,7 @@ model ShiftProfile {
   description  String?
 
   // Relations
-  schedule         Schedule                    @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
+  schedule         Schedule                  @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
   shiftTypes       ShiftType[]
   patterns         ShiftProfilePattern[]
   shiftAssignments ScheduleShiftAssignment[]
@@ -292,9 +294,9 @@ model DailyShift {
   updatedAt      DateTime    @updatedAt @map("updated_at")
 
   // Relations
-  schedule        Schedule                   @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
-  employee        Employee                   @relation(fields: [employeeId], references: [id], onDelete: Cascade)
-  shiftType       ShiftType?                 @relation(fields: [shiftTypeId], references: [id], onDelete: SetNull)
+  schedule        Schedule                 @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
+  employee        Employee                 @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  shiftType       ShiftType?               @relation(fields: [shiftTypeId], references: [id], onDelete: SetNull)
   conflicts       Conflict[]
   laborViolations ScheduleLaborViolation[]
 
@@ -360,15 +362,32 @@ model RosterPatternInstance {
 
 /// Правила отпусков по схеме
 model VacationRule {
-  id                String @id @default(uuid())
-  scheduleId        String @unique @map("schedule_id")
-  availableDays     Int    @map("available_days")
-  minContinuousDays Int    @default(14) @map("min_continuous_days")
+  id                     String @id @default(uuid())
+  scheduleId             String @unique @map("schedule_id")
+  availableDays          Int    @map("available_days")
+  minContinuousDays      Int    @default(14) @map("min_continuous_days")
+  maxConcurrentEmployees Int    @default(1) @map("max_concurrent_employees")
 
   // Relations
   schedule Schedule @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
 
   @@map("vacation_rules")
+}
+
+/// Выделенные дни отпуска для сотрудника
+model EmployeeVacationAllocation {
+  id            String @id @default(uuid())
+  scheduleId    String @map("schedule_id")
+  employeeId    String @map("employee_id")
+  year          Int
+  allocatedDays Int    @map("allocated_days")
+
+  // Relations
+  schedule Schedule @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  @@unique([scheduleId, employeeId, year])
+  @@map("employee_vacation_allocations")
 }
 
 /// Отпуска сотрудников
@@ -564,24 +583,24 @@ enum ChangeType {
 
 /// Настройки контроля режима труда и отдыха ТК РФ
 model LaborLawSettings {
-  id                        String   @id @default(uuid())
-  maxWorkingHoursPerShift   Decimal  @map("max_working_hours_per_shift") @db.Decimal(5, 2) @default(12)
-  minRestBetweenShifts      Json     @map("min_rest_between_shifts") // [{shiftDuration: 12, minRest: 11}, ...]
-  maxHoursPerWeek           Decimal  @map("max_hours_per_week") @db.Decimal(5, 2) @default(40)
-  maxHoursPerMonth          Decimal  @map("max_hours_per_month") @db.Decimal(6, 2) @default(166.67)
-  maxHoursPerQuarter        Decimal  @map("max_hours_per_quarter") @db.Decimal(6, 2) @default(500)
-  maxOvertimeHoursPerYear   Decimal  @map("max_overtime_hours_per_year") @db.Decimal(6, 2) @default(120)
-  nightHoursStart           String   @map("night_hours_start") @default("22:00")
-  nightHoursEnd             String   @map("night_hours_end") @default("06:00")
-  includeBreaksInNightHours Boolean  @map("include_breaks_in_night_hours") @default(false)
-  maxConsecutiveWorkDays    Int      @map("max_consecutive_work_days") @default(6)
-  maxNightShiftsPerWeek     Int?     @map("max_night_shifts_per_week")
-  enabledRules              Json     @map("enabled_rules") // Массив правил для проверки
-  workHoursSource           String   @map("work_hours_source") @default("production_calendar") // manual, production_calendar, consultant_ru, custom_api
-  customApiUrl              String?  @map("custom_api_url")
+  id                        String    @id @default(uuid())
+  maxWorkingHoursPerShift   Decimal   @default(12) @map("max_working_hours_per_shift") @db.Decimal(5, 2)
+  minRestBetweenShifts      Json      @map("min_rest_between_shifts") // [{shiftDuration: 12, minRest: 11}, ...]
+  maxHoursPerWeek           Decimal   @default(40) @map("max_hours_per_week") @db.Decimal(5, 2)
+  maxHoursPerMonth          Decimal   @default(166.67) @map("max_hours_per_month") @db.Decimal(6, 2)
+  maxHoursPerQuarter        Decimal   @default(500) @map("max_hours_per_quarter") @db.Decimal(6, 2)
+  maxOvertimeHoursPerYear   Decimal   @default(120) @map("max_overtime_hours_per_year") @db.Decimal(6, 2)
+  nightHoursStart           String    @default("22:00") @map("night_hours_start")
+  nightHoursEnd             String    @default("06:00") @map("night_hours_end")
+  includeBreaksInNightHours Boolean   @default(false) @map("include_breaks_in_night_hours")
+  maxConsecutiveWorkDays    Int       @default(6) @map("max_consecutive_work_days")
+  maxNightShiftsPerWeek     Int?      @map("max_night_shifts_per_week")
+  enabledRules              Json      @map("enabled_rules") // Массив правил для проверки
+  workHoursSource           String    @default("production_calendar") @map("work_hours_source") // manual, production_calendar, consultant_ru, custom_api
+  customApiUrl              String?   @map("custom_api_url")
   lastSyncAt                DateTime? @map("last_sync_at")
-  createdAt                 DateTime @default(now()) @map("created_at")
-  updatedAt                 DateTime @updatedAt @map("updated_at")
+  createdAt                 DateTime  @default(now()) @map("created_at")
+  updatedAt                 DateTime  @updatedAt @map("updated_at")
 
   @@map("labor_law_settings")
 }
@@ -591,12 +610,12 @@ model WorkHoursNorm {
   id               String   @id @default(uuid())
   year             Int      @unique
   totalHours       Decimal  @map("total_hours") @db.Decimal(7, 2)
-  isManualOverride Boolean  @map("is_manual_override") @default(false)
+  isManualOverride Boolean  @default(false) @map("is_manual_override")
   source           String   @default("production_calendar") // production_calendar, manual, consultant_ru, custom_api
   workingDays      Int?     @map("working_days")
   weekendDays      Int?     @map("weekend_days")
   holidayDays      Int?     @map("holiday_days")
-  metadata         Json?    // holidays, workingWeekends, calculationDetails
+  metadata         Json? // holidays, workingWeekends, calculationDetails
   createdAt        DateTime @default(now()) @map("created_at")
   updatedAt        DateTime @updatedAt @map("updated_at")
 
@@ -605,22 +624,22 @@ model WorkHoursNorm {
 
 /// Нарушения требований ТК РФ в расписаниях
 model ScheduleLaborViolation {
-  id              String                @id @default(uuid())
-  scheduleId      String                @map("schedule_id")
-  employeeId      String?               @map("employee_id")
-  violationType   LaborViolationType    @map("violation_type")
+  id              String             @id @default(uuid())
+  scheduleId      String             @map("schedule_id")
+  employeeId      String?            @map("employee_id")
+  violationType   LaborViolationType @map("violation_type")
   severity        ViolationSeverity
-  dateFrom        DateTime              @map("date_from") @db.Date
-  dateTo          DateTime?             @map("date_to") @db.Date
-  dailyShiftId    String?               @map("daily_shift_id")
-  actualValue     Decimal               @map("actual_value") @db.Decimal(8, 2)
-  expectedValue   Decimal               @map("expected_value") @db.Decimal(8, 2)
-  articleTkRf     String                @map("article_tk_rf")
-  description     String                @db.Text
-  resolved        Boolean               @default(false)
-  resolutionNotes String?               @map("resolution_notes") @db.Text
-  detectedAt      DateTime              @default(now()) @map("detected_at")
-  updatedAt       DateTime              @updatedAt @map("updated_at")
+  dateFrom        DateTime           @map("date_from") @db.Date
+  dateTo          DateTime?          @map("date_to") @db.Date
+  dailyShiftId    String?            @map("daily_shift_id")
+  actualValue     Decimal            @map("actual_value") @db.Decimal(8, 2)
+  expectedValue   Decimal            @map("expected_value") @db.Decimal(8, 2)
+  articleTkRf     String             @map("article_tk_rf")
+  description     String             @db.Text
+  resolved        Boolean            @default(false)
+  resolutionNotes String?            @map("resolution_notes") @db.Text
+  detectedAt      DateTime           @default(now()) @map("detected_at")
+  updatedAt       DateTime           @updatedAt @map("updated_at")
 
   // Relations
   schedule   Schedule    @relation(fields: [scheduleId], references: [id], onDelete: Cascade)

@@ -6,6 +6,7 @@ export * from './schedulesService';
 export * from './employeesService';
 export * from './shiftsService';
 export * from './vacationsService';
+export * from './vacationRulesService';
 export * from './shiftProfilesService';
 export * from './conflictsService';
 export * from './analyticsService';

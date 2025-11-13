@@ -28,6 +28,7 @@ export interface ScheduleWithDetails extends Schedule {
   conflicts: unknown[];
   shiftAssignments: unknown[];
   vacationRules?: unknown;
+  vacationAllocations?: unknown[];
   calendarEvents: unknown[];
   workHourTracking: unknown[];
   changeHistory: unknown[];
@@ -152,6 +153,7 @@ export async function getScheduleById(
         },
       },
       vacationRules: true,
+      vacationAllocations: true,
       calendarEvents: true,
       workHourTracking: true,
       changeHistory: {

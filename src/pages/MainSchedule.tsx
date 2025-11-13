@@ -272,6 +272,7 @@ export default function MainSchedule() {
     refetchInterval: 30000, // Обновляем каждые 30 секунд
   });
 
+
   // Real-time обновления
   useRealtime(scheduleId, (event) => {
     // Обновляем данные при real-time событиях
@@ -692,10 +693,6 @@ export default function MainSchedule() {
                       Настройки ТК РФ
                     </Button>
                   </div>
-                  <p className="text-gray-600 mt-1">
-                    {format(new Date(schedule.startDate), 'dd MMMM yyyy', { locale: ru })} -{' '}
-                    {format(new Date(schedule.endDate), 'dd MMMM yyyy', { locale: ru })}
-                  </p>
                 </div>
                 <div className="flex items-center space-x-2">
                   <Button
@@ -703,7 +700,19 @@ export default function MainSchedule() {
                     size="sm"
                     onClick={() => setIsEditPeriodModalOpen(true)}
                   >
-                    Редактировать период
+                    {schedule && (
+                      <>
+                        {format(new Date(schedule.startDate), 'dd MMMM yyyy', { locale: ru })} -{' '}
+                        {format(new Date(schedule.endDate), 'dd MMMM yyyy', { locale: ru })}
+                      </>
+                    )}
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setIsLaborSettingsOpen(true)}
+                  >
+                    Настройки ТК РФ
                   </Button>
                   <Button
                     variant="outline"
@@ -750,9 +759,9 @@ export default function MainSchedule() {
               </div>
             </div>
 
-            {/* Представление ростера: всегда через движок паттернов */}
             {employees && employees.length > 0 ? (
               (() => {
+                // Представление ростера: всегда через движок паттернов
                 // Вычисляем максимальную длину цикла из всех паттернов для отображения смещения
                 const allCycleLengths = shiftProfiles 
                   ? shiftProfiles.flatMap(sp => (sp.patterns || []).map(p => p.cycleLength || 0)).filter(l => l > 0)

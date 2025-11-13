@@ -8,6 +8,7 @@ import { authorize } from '../middleware/authorize';
 import employeesRoutes from './employeesRoutes';
 import shiftsRoutes from './shiftsRoutes';
 import vacationsRoutes from './vacationsRoutes';
+import vacationRulesRoutes from './vacationRulesRoutes';
 import permissionsRoutes from './permissionsRoutes';
 import rosterPatternsRoutes from './rosterPatternsRoutes';
 import shiftSwapsRoutes from './shiftSwapsRoutes';
@@ -65,6 +66,12 @@ router.use('/:scheduleId/shifts', shiftsRoutes);
  * Все маршруты отпусков требуют scheduleId
  */
 router.use('/:scheduleId/vacations', vacationsRoutes);
+
+/**
+ * Vacation rules routes
+ * Все маршруты правил отпусков требуют scheduleId
+ */
+router.use('/:scheduleId/vacation-rules', vacationRulesRoutes);
 
 // Roster pattern instances routes
 router.use('/:scheduleId/pattern-instances', rosterPatternsRoutes);
