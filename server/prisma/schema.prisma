@@ -143,6 +143,7 @@ model Employee {
   passwordHash   String?   @map("password_hash")
   passwordExpiry DateTime? @map("password_expiry")
   isPlaceholder  Boolean   @default(false) @map("is_placeholder")
+  isHidden       Boolean   @default(false) @map("is_hidden")
   createdAt      DateTime  @default(now()) @map("created_at")
 
   // Relations

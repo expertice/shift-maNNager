@@ -134,5 +134,29 @@ export const shiftsService = {
   deleteShift: async (scheduleId: string, shiftId: string): Promise<void> => {
     await apiClient.delete(`/schedules/${scheduleId}/shifts/${shiftId}`);
   },
+
+  /**
+   * Удалить все смены сотрудника в периоде расписания
+   */
+  deleteEmployeeShifts: async (
+    scheduleId: string,
+    employeeId: string,
+    startDate: string,
+    endDate: string
+  ): Promise<{ count: number }> => {
+    const response = await apiClient.delete<ApiResponse<{ count: number }>>(
+      `/schedules/${scheduleId}/shifts/employee/${employeeId}`,
+      {
+        params: {
+          startDate,
+          endDate,
+        },
+      }
+    );
+    if (!response.data.success || !response.data.data) {
+      throw new Error(response.data.error || 'Ошибка удаления смен сотрудника');
+    }
+    return response.data.data;
+  },
 };
 

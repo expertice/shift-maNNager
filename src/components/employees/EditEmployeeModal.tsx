@@ -12,6 +12,7 @@ export interface EditEmployeeModalProps {
     positionId?: string;
     birthDate?: string;
     departmentId: string;
+    isHidden?: boolean;
   }) => Promise<void>;
   employee?: Employee | null;
   departments: Department[];
@@ -38,6 +39,7 @@ export const EditEmployeeModal: React.FC<EditEmployeeModalProps> = ({
   const [positionId, setPositionId] = useState('');
   const [birthDate, setBirthDate] = useState('');
   const [departmentId, setDepartmentId] = useState('');
+  const [isHidden, setIsHidden] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [localPositions, setLocalPositions] = useState<Position[]>(positions || []);
   const [localDepartments, setLocalDepartments] = useState<Department[]>(departments || []);
@@ -64,6 +66,7 @@ export const EditEmployeeModal: React.FC<EditEmployeeModalProps> = ({
             : ''
         );
         setDepartmentId(employee.departmentId || '');
+        setIsHidden(employee.isHidden || false);
       } else {
         // Сброс для создания нового сотрудника
         setFullName('');
@@ -71,6 +74,7 @@ export const EditEmployeeModal: React.FC<EditEmployeeModalProps> = ({
         setPositionId('');
         setBirthDate('');
         setDepartmentId('');
+        setIsHidden(false);
       }
       setError(null);
     }
@@ -87,6 +91,7 @@ export const EditEmployeeModal: React.FC<EditEmployeeModalProps> = ({
         positionId: positionId || undefined,
         birthDate: birthDate || undefined,
         departmentId,
+        isHidden,
       });
       onClose();
     } catch (err) {
@@ -177,6 +182,20 @@ export const EditEmployeeModal: React.FC<EditEmployeeModalProps> = ({
           addButtonLabel="+ Добавить отдел"
           addPlaceholder="Введите название отдела"
         />
+
+        <div className="flex items-center space-x-2 pt-2">
+          <input
+            type="checkbox"
+            id="isHidden"
+            checked={isHidden}
+            onChange={(e) => setIsHidden(e.target.checked)}
+            disabled={isLoading}
+            className="w-4 h-4 text-primary border-gray-300 rounded focus:ring-primary"
+          />
+          <label htmlFor="isHidden" className="text-sm font-medium text-gray-700">
+            Скрыт из ростера
+          </label>
+        </div>
 
         <div className="flex justify-end space-x-2 pt-4">
           <Button type="button" variant="outline" onClick={handleClose} disabled={isLoading}>

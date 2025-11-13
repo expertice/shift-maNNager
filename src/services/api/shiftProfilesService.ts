@@ -190,5 +190,60 @@ export const shiftProfilesService = {
       throw new Error(response.data.error || 'Ошибка обновления смещения паттерна сотрудника');
     }
   },
+
+  /**
+   * Экспорт профилей смен
+   */
+  exportShiftProfiles: async (
+    scheduleId: string,
+    format: 'json' = 'json',
+    profileIds?: string[]
+  ): Promise<Blob> => {
+    const params = new URLSearchParams({
+      scheduleId,
+      format,
+    });
+    if (profileIds && profileIds.length > 0) {
+      profileIds.forEach(id => params.append('profileIds', id));
+    }
+    const response = await apiClient.get(
+      `/shift-profiles/export?${params.toString()}`,
+      { responseType: 'blob' }
+    );
+    return response.data;
+  },
+
+  /**
+   * Импорт профилей смен
+   */
+  importShiftProfiles: async (
+    scheduleId: string,
+    file: File,
+    mode: 'create' | 'update' | 'mixed'
+  ): Promise<{
+    success: number;
+    errors: Array<{ row: number; message: string }>;
+  }> => {
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('mode', mode);
+
+    const response = await apiClient.post<ApiResponse<{
+      success: number;
+      errors: Array<{ row: number; message: string }>;
+    }>>(
+      `/shift-profiles/import?scheduleId=${scheduleId}`,
+      formData,
+      {
+        headers: {
+          'Content-Type': 'multipart/form-data',
+        },
+      }
+    );
+    if (!response.data.success || !response.data.data) {
+      throw new Error(response.data.error || 'Ошибка импорта');
+    }
+    return response.data.data;
+  },
 };
 

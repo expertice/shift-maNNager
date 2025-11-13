@@ -3,6 +3,8 @@ import { AuthRequest, ApiResponse, ApiError, CompareProfilesResponse } from '../
 import * as shiftProfilesService from '../services/shiftProfilesService';
 import { ShiftProfile } from '@prisma/client';
 import { parseISO } from 'date-fns';
+import * as importExportService from '../services/importExportService';
+import multer from 'multer';
 
 /**
  * GET /api/v1/shift-profiles?scheduleId=xxx
@@ -489,6 +491,151 @@ export async function updateEmployeePatternOffsetHandler(
     res.json({
       success: true,
       data: { message: 'Employee pattern offset updated successfully' },
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+// Настройка multer для загрузки JSON файлов
+const uploadJson = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 10 * 1024 * 1024, // 10MB
+  },
+  fileFilter: (_req, file, cb) => {
+    const allowedMimes = ['application/json', 'text/json'];
+    if (
+      allowedMimes.includes(file.mimetype) ||
+      file.originalname.endsWith('.json')
+    ) {
+      cb(null, true);
+    } else {
+      cb(new Error('Поддерживаются только файлы JSON (.json)'));
+    }
+  },
+});
+
+/**
+ * Middleware для загрузки JSON файла
+ */
+export const uploadJsonFile = uploadJson.single('file');
+
+/**
+ * GET /api/v1/shift-profiles/export?scheduleId=xxx&format=json&profileIds=id1&profileIds=id2
+ * Экспорт профилей смен (если profileIds не указаны, экспортируются все профили)
+ */
+export async function exportShiftProfiles(
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  try {
+    const { scheduleId, profileIds } = req.query;
+    const format = (req.query.format as 'json') || 'json';
+
+    if (!scheduleId || typeof scheduleId !== 'string') {
+      const error: ApiError = {
+        status: 400,
+        code: 'VALIDATION_ERROR',
+        message: 'scheduleId query parameter is required',
+      };
+      return next(error);
+    }
+
+    if (format !== 'json') {
+      const error: ApiError = {
+        status: 400,
+        code: 'VALIDATION_ERROR',
+        message: 'format must be json',
+      };
+      return next(error);
+    }
+
+    // Получаем все профили смен с деталями
+    let profiles = await shiftProfilesService.getShiftProfilesBySchedule(scheduleId);
+
+    // Фильтруем по выбранным ID, если они указаны
+    if (profileIds) {
+      const selectedIds = Array.isArray(profileIds) ? profileIds : [profileIds];
+      const selectedIdsSet = new Set(selectedIds);
+      profiles = profiles.filter(profile => selectedIdsSet.has(profile.id));
+    }
+
+    // Генерируем JSON
+    const buffer = importExportService.exportShiftProfilesToJSON(profiles);
+    const filename = `shift_profiles_${scheduleId}_${new Date().toISOString().split('T')[0]}.json`;
+
+    res.setHeader('Content-Type', 'application/json');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.send(buffer);
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * POST /api/v1/shift-profiles/import?scheduleId=xxx
+ * Импорт профилей смен
+ */
+export async function importShiftProfiles(
+  req: AuthRequest,
+  res: Response<ApiResponse<importExportService.ImportResult>>,
+  next: NextFunction
+): Promise<void> {
+  try {
+    const { scheduleId } = req.query;
+    const file = req.file;
+    const mode = (req.body.mode as importExportService.ImportMode) || 'mixed';
+
+    if (!scheduleId || typeof scheduleId !== 'string') {
+      const error: ApiError = {
+        status: 400,
+        code: 'VALIDATION_ERROR',
+        message: 'scheduleId query parameter is required',
+      };
+      return next(error);
+    }
+
+    if (!file) {
+      const error: ApiError = {
+        status: 400,
+        code: 'VALIDATION_ERROR',
+        message: 'File is required',
+      };
+      return next(error);
+    }
+
+    if (mode !== 'create' && mode !== 'update' && mode !== 'mixed') {
+      const error: ApiError = {
+        status: 400,
+        code: 'VALIDATION_ERROR',
+        message: 'mode must be create, update, or mixed',
+      };
+      return next(error);
+    }
+
+    // Парсим JSON файл
+    const rows = importExportService.parseShiftProfilesFromJSON(file.buffer);
+
+    // Валидация данных
+    const validationErrors = importExportService.validateShiftProfilesImport(rows, scheduleId);
+    if (validationErrors.length > 0) {
+      return res.json({
+        success: true,
+        data: {
+          success: 0,
+          errors: validationErrors,
+        },
+      });
+    }
+
+    // Обработка импорта
+    const result = await importExportService.processShiftProfilesImport(rows, scheduleId, mode);
+
+    res.json({
+      success: true,
+      data: result,
     });
   } catch (error) {
     next(error);

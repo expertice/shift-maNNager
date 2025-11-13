@@ -4,7 +4,7 @@ import { MonthSlice, getSlotStatus, SlotStatus } from '@/utils/rosterCalendar';
 
 export interface RosterMonthTableProps {
   title: string;
-  employees: { id: string; fullName: string; tabNumber?: string | null }[];
+  employees: { id: string; fullName: string; tabNumber?: string | null; birthDate?: Date | string | null }[];
   instances: Record<string, { sequence: (string | null)[]; startIndex: number; lockedIndices?: number[] | null }>;
   slice: MonthSlice;
   maxDays: number;

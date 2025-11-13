@@ -35,6 +35,25 @@ router.post('/update-pattern-offset', authenticate, shiftProfilesController.upda
 router.post('/update-employee-pattern-offset', authenticate, shiftProfilesController.updateEmployeePatternOffsetHandler);
 
 /**
+ * GET /api/v1/shift-profiles/export
+ * Экспорт профилей смен (требуется аутентификация)
+ * Должен быть определен ПЕРЕД /:id, чтобы не перехватывался
+ */
+router.get('/export', authenticate, shiftProfilesController.exportShiftProfiles);
+
+/**
+ * POST /api/v1/shift-profiles/import
+ * Импорт профилей смен (требуется аутентификация)
+ * Должен быть определен ПЕРЕД /:id, чтобы не перехватывался
+ */
+router.post(
+  '/import',
+  authenticate,
+  shiftProfilesController.uploadJsonFile,
+  shiftProfilesController.importShiftProfiles
+);
+
+/**
  * GET /api/v1/shift-profiles/:id
  * Получить профиль смены по ID
  */

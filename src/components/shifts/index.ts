@@ -9,4 +9,5 @@ export * from './EditShiftProfileModal';
 export * from './PatternConstructor';
 export * from './ShiftTypeEditor';
 export * from './PatternEditor';
+export * from './ImportExportProfilesModal';
 

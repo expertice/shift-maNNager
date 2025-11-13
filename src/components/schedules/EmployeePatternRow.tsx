@@ -29,6 +29,7 @@ export interface EmployeePatternRowProps {
   shiftsByDateAndEmployee?: Map<string, Shift>;
   selectedSlotId?: string; // ID выбранного слота для обмена (формат: `${employeeId}-${dayIndex}`)
   isSlotSelected?: (employeeId: string, dayIndex: number) => boolean;
+  birthDate?: Date | string | null;
 }
 
 // Компонент отдельного слота
@@ -54,7 +55,10 @@ const RosterSlot: React.FC<{
     endTime?: string;
     workingHours?: number;
   };
-}> = ({ id, shiftTypeId, dayIndex, status, shiftTypes, onSlotClick, isSelected, employeeId, isSlotSelected, shiftTypeFromShift }) => {
+  birthDate?: Date | string | null;
+  year: number;
+  month: number; // 0-based
+}> = ({ id, shiftTypeId, dayIndex, status, shiftTypes, onSlotClick, isSelected, employeeId, isSlotSelected, shiftTypeFromShift, birthDate, year, month }) => {
   const shiftType = shiftTypeId ? shiftTypes.find(st => st.id === shiftTypeId) : null;
   
   // Используем данные из смены, если они доступны, иначе из массива типов смен
@@ -107,6 +111,43 @@ const RosterSlot: React.FC<{
     }
   };
 
+  // Проверка, является ли день днем рождения
+  const isBirthday = React.useMemo(() => {
+    if (!birthDate) return false;
+    
+    // Создаем дату для текущего дня (локальное время)
+    const dayOfMonth = dayIndex + 1; // dayIndex 0-based, день месяца 1-based
+    const monthOfYear = month; // month уже 0-based
+    
+    // Обрабатываем birthDate - может быть строкой или Date объектом
+    let birthDay: number;
+    let birthMonth: number;
+    
+    if (typeof birthDate === 'string') {
+      // Если строка, парсим её вручную, чтобы избежать проблем с часовыми поясами
+      // Формат может быть "YYYY-MM-DD" или ISO строка
+      const dateMatch = birthDate.match(/^(\d{4})-(\d{2})-(\d{2})/);
+      if (dateMatch) {
+        // Парсим YYYY-MM-DD формат
+        birthMonth = parseInt(dateMatch[2], 10) - 1; // месяц 0-based
+        birthDay = parseInt(dateMatch[3], 10);
+      } else {
+        // Пробуем стандартный парсинг
+        const birth = new Date(birthDate);
+        if (isNaN(birth.getTime())) return false;
+        birthDay = birth.getDate();
+        birthMonth = birth.getMonth();
+      }
+    } else {
+      // Если это Date объект
+      birthDay = birthDate.getDate();
+      birthMonth = birthDate.getMonth();
+    }
+    
+    // Сравниваем день и месяц, игнорируя год
+    return dayOfMonth === birthDay && monthOfYear === birthMonth;
+  }, [birthDate, year, month, dayIndex]);
+
   return (
     <div
       className={classNames(
@@ -124,6 +165,20 @@ const RosterSlot: React.FC<{
         title={getTooltipText()}
         className="h-8"
       />
+      {/* Корона для дня рождения */}
+      {isBirthday && (
+        <div
+          className="absolute -top-3 left-1/2 transform -translate-x-1/2 z-50 pointer-events-none"
+          title="День рождения"
+          style={{ 
+            fontSize: '16px',
+            lineHeight: '1',
+            filter: 'drop-shadow(0 2px 4px rgba(0,0,0,0.3))',
+          }}
+        >
+          👑
+        </div>
+      )}
       {/* Кнопка-хотспот для назначения смены, открывает меню выбора типа смены */}
       {!disabled && (
         <button
@@ -161,6 +216,7 @@ export default function EmployeePatternRow({
   shiftsByDateAndEmployee,
   selectedSlotId,
   isSlotSelected,
+  birthDate,
 }: EmployeePatternRowProps) {
   // Создаем карту типов смен для быстрого доступа
   const shiftTypeMap = React.useMemo(
@@ -229,6 +285,9 @@ export default function EmployeePatternRow({
             employeeId={employeeId}
             isSlotSelected={isSlotSelected}
             shiftTypeFromShift={shiftTypeFromShift}
+            birthDate={birthDate}
+            year={year}
+            month={month}
           />
         );
       })}

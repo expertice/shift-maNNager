@@ -36,6 +36,13 @@ router.post('/bulk', authorize('editor'), shiftsController.bulkCreateShifts);
 router.post('/swap', authorize('editor'), shiftsController.swapShifts);
 
 /**
+ * DELETE /api/v1/schedules/:scheduleId/shifts/employee/:employeeId
+ * Удалить все смены сотрудника в периоде расписания (только editor/owner)
+ * Должен быть перед /:id, чтобы избежать конфликта маршрутов
+ */
+router.delete('/employee/:employeeId', authorize('editor'), shiftsController.deleteEmployeeShifts);
+
+/**
  * PUT /api/v1/schedules/:scheduleId/shifts/:id
  * Обновить смену (только editor/owner)
  */

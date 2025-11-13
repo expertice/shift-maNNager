@@ -108,6 +108,7 @@ export async function createSchedule(
 
     const schedule = await schedulesService.createSchedule({
       ownerUserId: user.id,
+      ownerEmail: user.email, // Передаем email для проверки существования пользователя
       name,
       startDate: new Date(startDate),
       endDate: new Date(endDate),

@@ -8,6 +8,7 @@ export interface CreateEmployeeData {
   tabNumber: string;
   positionId?: string;
   birthDate?: Date;
+  isHidden?: boolean;
 }
 
 export interface UpdateEmployeeData {
@@ -16,6 +17,7 @@ export interface UpdateEmployeeData {
   positionId?: string;
   birthDate?: Date;
   departmentId?: string;
+  isHidden?: boolean;
 }
 
 /**
@@ -57,6 +59,7 @@ export async function createEmployee(data: CreateEmployeeData): Promise<Employee
       fullName: data.fullName,
       tabNumber: data.tabNumber,
       birthDate: data.birthDate,
+      isHidden: data.isHidden || false,
       loginId: null, // loginId устанавливается отдельно при необходимости
     },
   });
@@ -70,6 +73,34 @@ export async function updateEmployee(
   scheduleId: string,
   data: UpdateEmployeeData
 ): Promise<Employee | null> {
+  // Если сотрудник скрывается, очищаем его паттерн-инстанс
+  if (data.isHidden === true) {
+    const instance = await prisma.rosterPatternInstance.findUnique({
+      where: {
+        scheduleId_employeeId: {
+          scheduleId,
+          employeeId,
+        },
+      },
+    });
+
+    if (instance) {
+      // Очищаем sequence, устанавливаем patternId в null и startIndex в 0
+      await prisma.rosterPatternInstance.update({
+        where: {
+          scheduleId_employeeId: {
+            scheduleId,
+            employeeId,
+          },
+        },
+        data: {
+          patternId: null,
+          sequence: [],
+          startIndex: 0,
+        },
+      });
+    }
+  }
   // Проверяем, что сотрудник принадлежит схеме
   const employee = await prisma.employee.findFirst({
     where: {
@@ -105,6 +136,7 @@ export async function updateEmployee(
       ...(data.positionId !== undefined && { positionId: data.positionId }),
       ...(data.birthDate !== undefined && { birthDate: data.birthDate }),
       ...(data.departmentId && { departmentId: data.departmentId }),
+      ...(data.isHidden !== undefined && { isHidden: data.isHidden }),
     },
   });
 }
@@ -273,9 +305,162 @@ export async function assignShiftProfile(
   }
 
   // Обновляем профиль
-  return prisma.employee.update({
+  const updatedEmployee = await prisma.employee.update({
     where: { id: employeeId },
     data: { shiftProfileId },
   });
+
+  // Если профиль снят (null), очищаем паттерн-инстанс
+  if (shiftProfileId === null) {
+    const instance = await prisma.rosterPatternInstance.findUnique({
+      where: {
+        scheduleId_employeeId: {
+          scheduleId,
+          employeeId,
+        },
+      },
+    });
+
+    if (instance) {
+      // Очищаем sequence, устанавливаем patternId в null и startIndex в 0
+      await prisma.rosterPatternInstance.update({
+        where: {
+          scheduleId_employeeId: {
+            scheduleId,
+            employeeId,
+          },
+        },
+        data: {
+          patternId: null,
+          sequence: [],
+          startIndex: 0,
+        },
+      });
+    }
+  }
+
+  return updatedEmployee;
+}
+
+/**
+ * Массовое обновление сотрудников
+ */
+export async function bulkUpdateEmployees(
+  employeeIds: string[],
+  scheduleId: string,
+  data: {
+    departmentId?: string;
+    positionId?: string;
+  }
+): Promise<number> {
+  // Проверяем, что все сотрудники принадлежат схеме
+  const employees = await prisma.employee.findMany({
+    where: {
+      id: { in: employeeIds },
+      scheduleId,
+    },
+  });
+
+  if (employees.length !== employeeIds.length) {
+    throw new Error('Некоторые сотрудники не найдены или не принадлежат этой схеме');
+  }
+
+  // Обновляем сотрудников в транзакции
+  const updateData: any = {};
+  if (data.departmentId !== undefined) {
+    updateData.departmentId = data.departmentId || null;
+  }
+  if (data.positionId !== undefined) {
+    updateData.positionId = data.positionId || null;
+  }
+
+  const result = await prisma.employee.updateMany({
+    where: {
+      id: { in: employeeIds },
+      scheduleId,
+    },
+    data: updateData,
+  });
+
+  return result.count;
+}
+
+/**
+ * Массовое удаление сотрудников
+ */
+export async function bulkDeleteEmployees(
+  employeeIds: string[],
+  scheduleId: string
+): Promise<number> {
+  // Проверяем, что все сотрудники принадлежат схеме
+  const employees = await prisma.employee.findMany({
+    where: {
+      id: { in: employeeIds },
+      scheduleId,
+    },
+  });
+
+  if (employees.length !== employeeIds.length) {
+    throw new Error('Некоторые сотрудники не найдены или не принадлежат этой схеме');
+  }
+
+  // Удаляем сотрудников в транзакции
+  const result = await prisma.employee.deleteMany({
+    where: {
+      id: { in: employeeIds },
+      scheduleId,
+    },
+  });
+
+  return result.count;
+}
+
+/**
+ * Массовое обновление видимости сотрудников
+ */
+export async function bulkUpdateEmployeeVisibility(
+  employeeIds: string[],
+  scheduleId: string,
+  isHidden: boolean
+): Promise<number> {
+  // Проверяем, что все сотрудники принадлежат схеме
+  const employees = await prisma.employee.findMany({
+    where: {
+      id: { in: employeeIds },
+      scheduleId,
+    },
+  });
+
+  if (employees.length !== employeeIds.length) {
+    throw new Error('Некоторые сотрудники не найдены или не принадлежат этой схеме');
+  }
+
+  // Обновляем видимость сотрудников в транзакции
+  const result = await prisma.employee.updateMany({
+    where: {
+      id: { in: employeeIds },
+      scheduleId,
+    },
+    data: { isHidden },
+  });
+
+  return result.count;
+}
+
+/**
+ * Валидация данных сотрудника
+ */
+export function validateEmployeeData(data: {
+  fullName?: string;
+  tabNumber?: string;
+  departmentId?: string;
+  positionId?: string;
+}): void {
+  if (data.fullName !== undefined && (!data.fullName || data.fullName.trim() === '')) {
+    throw new Error('ФИО не может быть пустым');
+  }
+  if (data.tabNumber !== undefined && (!data.tabNumber || data.tabNumber.trim() === '')) {
+    throw new Error('Табельный номер не может быть пустым');
+  }
 }
 

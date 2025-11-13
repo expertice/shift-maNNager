@@ -2,6 +2,7 @@ import { prisma } from '../lib/prisma';
 import { DailyShift, ShiftStatus } from '@prisma/client';
 import { startOfDay, endOfDay, addDays } from 'date-fns';
 import { validateSchedule } from './laborLawComplianceService.js';
+import { normalizeUtcStart, nextDayUtcStart } from '../utils/patternCycle';
 
 export interface CreateShiftData {
   scheduleId: string;
@@ -348,6 +349,47 @@ export async function deleteShiftsByPeriod(
       scheduleId,
       startISO: startDate.toISOString(),
       endISO: end.toISOString(),
+      count: result.count,
+    });
+  } catch {}
+
+  return result.count;
+}
+
+/**
+ * Удалить все смены сотрудника в указанном периоде
+ */
+export async function deleteEmployeeShifts(
+  scheduleId: string,
+  employeeId: string,
+  startDate: Date,
+  endDate: Date
+): Promise<number> {
+  // Нормализуем даты к началу дня
+  const start = startOfDay(startDate);
+  const end = startOfDay(endDate);
+  
+  // Используем ту же логику нормализации, что и в generateShiftsFromProfile
+  const normalizedStart = normalizeUtcStart(start);
+  const normalizedEndExclusive = nextDayUtcStart(end);
+  
+  const result = await prisma.dailyShift.deleteMany({
+    where: {
+      scheduleId,
+      employeeId,
+      date: {
+        gte: normalizedStart,
+        lt: normalizedEndExclusive,
+      },
+    },
+  });
+
+  try {
+    console.info('[deleteEmployeeShifts]', {
+      scheduleId,
+      employeeId,
+      startISO: normalizedStart.toISOString(),
+      endExclusiveISO: normalizedEndExclusive.toISOString(),
       count: result.count,
     });
   } catch {}

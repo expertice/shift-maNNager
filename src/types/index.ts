@@ -116,6 +116,7 @@ export interface Employee {
   passwordHash?: string | null;
   passwordExpiry?: Date | null;
   isPlaceholder?: boolean;
+  isHidden?: boolean;
   createdAt: Date;
   department?: Department;
   position?: Position;

@@ -18,8 +18,10 @@ import {
   endOfYear,
   startOfQuarter,
   endOfQuarter,
+  startOfDay,
   differenceInHours,
   differenceInMinutes,
+  differenceInDays,
   eachDayOfInterval,
   isSameDay,
   addDays,
@@ -240,7 +242,8 @@ export async function validateSchedule(scheduleId: string): Promise<{
     }
 
     // 3. Проверка рабочих дней подряд
-    if (settings.enabledRules.includes('excessive_consecutive_days')) {
+    // Проверка выполняется, если настройка maxConsecutiveWorkDays задана (больше 0)
+    if (settings.maxConsecutiveWorkDays > 0) {
       const consecutiveViolations = await checkConsecutiveWorkDays(
         employeeShifts,
         settings,
@@ -439,50 +442,80 @@ async function checkConsecutiveWorkDays(
   const violations: any[] = [];
   const maxDays = settings.maxConsecutiveWorkDays;
 
-  let consecutiveDays = 0;
-  let startDate: Date | null = null;
+  if (shifts.length === 0) {
+    return violations;
+  }
 
-  for (let i = 0; i < shifts.length; i++) {
-    const currentShift = shifts[i];
-    const prevShift = i > 0 ? shifts[i - 1] : null;
-
-    // Проверяем, идут ли дни подряд
-    if (prevShift) {
-      const daysDiff = Math.abs(
-        (currentShift.date.getTime() - prevShift.date.getTime()) / (1000 * 60 * 60 * 24)
-      );
-
-      if (daysDiff === 1) {
-        consecutiveDays++;
+  // Нормализуем и сортируем даты к началу дня для корректного сравнения
+  // Используем startOfDay для правильной обработки часовых поясов
+  const normalizedShifts = shifts
+    .map(shift => {
+      // Обрабатываем разные форматы дат
+      let date: Date;
+      if (shift.date instanceof Date) {
+        date = shift.date;
+      } else if (typeof shift.date === 'string') {
+        date = parseISO(shift.date);
       } else {
-        // Сброс счетчика
-        if (consecutiveDays > maxDays && startDate) {
-          violations.push({
-            scheduleId,
-            employeeId,
-            violationType: LaborViolationType.excessive_consecutive_days,
-            severity: ViolationSeverity.warning,
-            dateFrom: startDate,
-            dateTo: prevShift.date,
-            dailyShiftId: null,
-            actualValue: consecutiveDays,
-            expectedValue: maxDays,
-            articleTkRf: 'Ст. 110 ТК РФ',
-            description: `Работа ${consecutiveDays} дней подряд превышает максимально допустимые ${maxDays} дней`,
-          });
-        }
-        consecutiveDays = 1;
-        startDate = currentShift.date;
+        // Если дата в неожиданном формате, пропускаем
+        return null;
       }
+      
+      return {
+        ...shift,
+        date: startOfDay(date)
+      };
+    })
+    .filter((shift): shift is NonNullable<typeof shift> => shift !== null)
+    // Сортируем по дате на случай, если они не отсортированы
+    .sort((a, b) => a.date.getTime() - b.date.getTime());
+
+  if (normalizedShifts.length === 0) {
+    return violations;
+  }
+
+  let consecutiveDays = 1;
+  let startDate: Date = normalizedShifts[0].date;
+
+  for (let i = 1; i < normalizedShifts.length; i++) {
+    const currentShift = normalizedShifts[i];
+    const prevShift = normalizedShifts[i - 1];
+
+    // Проверяем, что текущий день равен предыдущему + 1 день
+    // Используем isSameDay для надежного сравнения дат
+    const expectedNextDay = addDays(prevShift.date, 1);
+    const isConsecutive = isSameDay(currentShift.date, expectedNextDay);
+
+    if (isConsecutive) {
+      // Дни идут подряд - увеличиваем счетчик
+      consecutiveDays++;
     } else {
+      // Дни не идут подряд - проверяем предыдущую серию и сбрасываем счетчик
+      if (consecutiveDays > maxDays) {
+        violations.push({
+          scheduleId,
+          employeeId,
+          violationType: LaborViolationType.excessive_consecutive_days,
+          severity: ViolationSeverity.warning,
+          dateFrom: startDate,
+          dateTo: prevShift.date,
+          dailyShiftId: null,
+          actualValue: consecutiveDays,
+          expectedValue: maxDays,
+          articleTkRf: 'Ст. 110 ТК РФ',
+          description: `Работа ${consecutiveDays} дней подряд превышает максимально допустимые ${maxDays} дней`,
+        });
+      }
+      
+      // Начинаем новую серию
       consecutiveDays = 1;
       startDate = currentShift.date;
     }
   }
 
-  // Проверка последней серии
-  if (consecutiveDays > maxDays && startDate) {
-    const lastShift = shifts[shifts.length - 1];
+  // Проверка последней серии (если она не была проверена в цикле)
+  if (consecutiveDays > maxDays) {
+    const lastShift = normalizedShifts[normalizedShifts.length - 1];
     violations.push({
       scheduleId,
       employeeId,

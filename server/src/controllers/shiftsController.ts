@@ -237,3 +237,48 @@ export async function deleteShift(
   }
 }
 
+/**
+ * DELETE /api/v1/schedules/:scheduleId/shifts/employee/:employeeId
+ * Удалить все смены сотрудника в периоде расписания
+ */
+export async function deleteEmployeeShifts(
+  req: AuthRequest,
+  res: Response<ApiResponse<{ count: number }>>,
+  next: NextFunction
+): Promise<void> {
+  try {
+    const { scheduleId, employeeId } = req.params;
+    const { startDate, endDate } = req.query;
+
+    if (!startDate || !endDate) {
+      const error: ApiError = {
+        status: 400,
+        code: 'VALIDATION_ERROR',
+        message: 'startDate and endDate query parameters are required',
+      };
+      return next(error);
+    }
+
+    const start = new Date(startDate as string);
+    const end = new Date(endDate as string);
+
+    if (isNaN(start.getTime()) || isNaN(end.getTime())) {
+      const error: ApiError = {
+        status: 400,
+        code: 'VALIDATION_ERROR',
+        message: 'Invalid date format',
+      };
+      return next(error);
+    }
+
+    const count = await shiftsService.deleteEmployeeShifts(scheduleId, employeeId, start, end);
+
+    res.json({
+      success: true,
+      data: { count },
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+

@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query';
 import { MainLayout, SidebarIcons } from '@components/layout';
@@ -8,7 +8,7 @@ import type { RosterPatternInstanceDTO } from '@services/api/patternInstancesSer
 import { useRealtime } from '@hooks/useRealtime';
 import { EditPeriodModal } from '@components/schedules/EditPeriodModal';
 import { ShiftSwapRequestsModal } from '@components/schedules/ShiftSwapRequestsModal';
-import { EditEmployeeModal } from '@components/employees';
+import { EditEmployeeModal, AddEmployeeToRosterModal } from '@components/employees';
 import { shiftSwapService } from '@services/api/shiftSwapService';
 import { Shift, Employee } from '@types';
 import { format, eachDayOfInterval, parseISO, isDate, startOfDay, endOfDay } from 'date-fns';
@@ -18,6 +18,7 @@ import { SlotView } from '@components/shifts/PatternConstructor';
 import { splitPeriodByMonths, maxDaysAcrossMonths, getSlotStatus } from '@/utils/rosterCalendar';
 import LaborViolationsModal from '@components/schedules/LaborViolationsModal';
 import LaborLawSettingsModal from '@components/labor/LaborLawSettingsModal';
+import { EmployeeStatistics } from '@components/schedules/EmployeeStatistics';
 
 /**
  * Основная страница редактирования расписания
@@ -33,6 +34,10 @@ export default function MainSchedule() {
   const [employeeOrder, setEmployeeOrder] = useState<string[]>([]);
   const [isLaborViolationsModalOpen, setIsLaborViolationsModalOpen] = useState<boolean>(false);
   const [isLaborSettingsOpen, setIsLaborSettingsOpen] = useState<boolean>(false);
+  const [isAddEmployeeModalOpen, setIsAddEmployeeModalOpen] = useState(false);
+  const [hoveredEmployeeId, setHoveredEmployeeId] = useState<string | null>(null);
+  // Храним предыдущее состояние сотрудников для определения, кто стал видимым
+  const prevEmployeesRef = useRef<Map<string, boolean>>(new Map());
 
   if (!scheduleId) {
     return <div>Ошибка: не указан ID расписания</div>;
@@ -69,16 +74,56 @@ export default function MainSchedule() {
   useEffect(() => {
     if (employees && employees.length > 0 && scheduleId) {
       setEmployeeOrder(prev => {
-        // Если порядок уже установлен, обновляем его (добавляем новых, удаляем несуществующих)
+        // Создаем карту текущего состояния видимости сотрудников
+        const currentVisibility = new Map<string, boolean>();
+        employees.forEach(emp => {
+          currentVisibility.set(emp.id, !emp.isHidden);
+        });
+        
+        // Определяем сотрудников, которые стали видимыми (были скрыты, теперь видимы)
+        // Только если ref уже инициализирован (не первая загрузка)
+        const newlyVisibleIds: string[] = [];
+        const isFirstLoad = prevEmployeesRef.current.size === 0;
+        
+        if (!isFirstLoad) {
+          // Сравниваем текущее состояние с предыдущим
+          currentVisibility.forEach((isVisible, empId) => {
+            const prevWasHidden = prevEmployeesRef.current.get(empId) === false;
+            // Если сотрудник стал видимым (был скрыт, теперь видим)
+            if (isVisible && prevWasHidden) {
+              newlyVisibleIds.push(empId);
+            }
+          });
+        }
+        
+        // Обновляем ref с текущим состоянием ПОСЛЕ определения новоявленных
+        // Это важно, чтобы на следующем рендере мы могли определить изменения
+        prevEmployeesRef.current = currentVisibility;
+        
+        // Если порядок уже установлен, обновляем его
         if (prev.length > 0) {
           const existingIds = new Set(prev);
-          const newIds = employees
-            .filter(emp => !existingIds.has(emp.id))
-            .map(emp => emp.id);
-          // Удаляем несуществующих сотрудников из порядка
           const employeeIds = new Set(employees.map(emp => emp.id));
-          const filtered = prev.filter(id => employeeIds.has(id));
-          return newIds.length > 0 ? [...filtered, ...newIds] : filtered;
+          
+          // Получаем видимых сотрудников
+          const visibleEmployees = employees.filter(emp => !emp.isHidden);
+          const visibleIds = new Set(visibleEmployees.map(emp => emp.id));
+          
+          // Удаляем несуществующих сотрудников из порядка
+          // Оставляем только видимых сотрудников в порядке
+          const filtered = prev.filter(id => employeeIds.has(id) && visibleIds.has(id));
+          
+          // Удаляем вновь ставших видимыми из их текущих позиций (если они были в порядке)
+          const orderWithoutNewlyVisible = filtered.filter(id => !newlyVisibleIds.includes(id));
+          
+          // Находим новых сотрудников (которых вообще не было в порядке) и которые видимы
+          const newIds = employees
+            .filter(emp => !existingIds.has(emp.id) && !emp.isHidden)
+            .map(emp => emp.id);
+          
+          // Добавляем вновь ставших видимыми и новых сотрудников в конец
+          const idsToAdd = [...newlyVisibleIds, ...newIds];
+          return idsToAdd.length > 0 ? [...orderWithoutNewlyVisible, ...idsToAdd] : orderWithoutNewlyVisible;
         }
         
         // Если порядок не установлен, загружаем из localStorage или инициализируем из массива сотрудников
@@ -90,36 +135,68 @@ export default function MainSchedule() {
               // Проверяем, что все ID из сохраненного порядка существуют в текущем списке сотрудников
               const employeeIds = new Set(employees.map(emp => emp.id));
               const validOrder = parsedOrder.filter(id => employeeIds.has(id));
-              // Добавляем новых сотрудников в конец
-              const newIds = employees
-                .filter(emp => !validOrder.includes(emp.id))
+              
+              // Получаем видимых сотрудников
+              const visibleEmployees = employees.filter(emp => !emp.isHidden);
+              const visibleIds = new Set(visibleEmployees.map(emp => emp.id));
+              
+              // Оставляем только видимых сотрудников из сохраненного порядка
+              const existingVisible = validOrder.filter(id => visibleIds.has(id));
+              
+              // Удаляем вновь ставших видимыми из их текущих позиций (если не первая загрузка)
+              // Это важно: если сотрудник был скрыт и стал видимым, он должен быть в конце
+              // Также проверяем: если сотрудник видим и его ID был в сохраненном порядке,
+              // но он стал видимым только сейчас - перемещаем его в конец
+              let orderWithoutNewlyVisible: string[];
+              if (isFirstLoad) {
+                orderWithoutNewlyVisible = existingVisible;
+              } else {
+                // Удаляем тех, кто стал видимым, из их текущих позиций
+                orderWithoutNewlyVisible = existingVisible.filter(id => !newlyVisibleIds.includes(id));
+              }
+              
+              // Добавляем новых видимых сотрудников в конец (которых не было в сохраненном порядке)
+              const savedOrderIds = new Set(validOrder);
+              const newIds = visibleEmployees
+                .filter(emp => !savedOrderIds.has(emp.id))
                 .map(emp => emp.id);
-              return newIds.length > 0 ? [...validOrder, ...newIds] : validOrder;
+              
+              // Добавляем вновь ставших видимыми и новых сотрудников в конец
+              const idsToAdd = isFirstLoad ? newIds : [...newlyVisibleIds, ...newIds];
+              return idsToAdd.length > 0 ? [...orderWithoutNewlyVisible, ...idsToAdd] : orderWithoutNewlyVisible;
             }
           } catch (error) {
             console.error('Error parsing saved employee order:', error);
           }
         }
         
-        // Если нет сохраненного порядка, инициализируем из массива сотрудников
-        return employees.map(emp => emp.id);
+        // Если нет сохраненного порядка, инициализируем из массива видимых сотрудников
+        return employees.filter(emp => !emp.isHidden).map(emp => emp.id);
       });
+    } else if (employees && employees.length === 0) {
+      // Если сотрудников нет, очищаем ref
+      prevEmployeesRef.current = new Map();
     }
   }, [employees, scheduleId]);
 
-  // Сортированные сотрудники по порядку
+  // Сортированные сотрудники по порядку (исключая скрытых)
   const sortedEmployees = useMemo(() => {
-    if (!employees || employeeOrder.length === 0) return employees || [];
+    if (!employees || employeeOrder.length === 0) {
+      // Фильтруем скрытых сотрудников
+      return (employees || []).filter(emp => !emp.isHidden);
+    }
     
     const orderMap = new Map(employeeOrder.map((id, index) => [id, index]));
-    const sorted = [...employees].sort((a, b) => {
+    // Фильтруем скрытых сотрудников перед сортировкой
+    const visibleEmployees = employees.filter(emp => !emp.isHidden);
+    const sorted = [...visibleEmployees].sort((a, b) => {
       const aIndex = orderMap.get(a.id) ?? Infinity;
       const bIndex = orderMap.get(b.id) ?? Infinity;
       return aIndex - bIndex;
     });
     
-    // Добавляем новых сотрудников в конец, если они появились
-    const newEmployees = employees.filter(emp => !orderMap.has(emp.id));
+    // Добавляем новых видимых сотрудников в конец, если они появились
+    const newEmployees = visibleEmployees.filter(emp => !orderMap.has(emp.id));
     return [...sorted, ...newEmployees];
   }, [employees, employeeOrder]);
 
@@ -211,6 +288,29 @@ export default function MainSchedule() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['employees', scheduleId] });
       setEditingEmployeeId(null);
+    },
+  });
+
+  // Мутация для переключения видимости сотрудника
+  const toggleVisibilityMutation = useMutation({
+    mutationFn: async ({ employeeId, isHidden }: { employeeId: string; isHidden: boolean }) => {
+      await employeesService.updateEmployee(scheduleId, employeeId, { isHidden });
+      
+      // Если сотрудник скрыт, очищаем его расписание
+      if (isHidden && schedule) {
+        const startDateISO = typeof schedule.startDate === 'string' 
+          ? schedule.startDate 
+          : new Date(schedule.startDate).toISOString();
+        const endDateISO = typeof schedule.endDate === 'string' 
+          ? schedule.endDate 
+          : new Date(schedule.endDate).toISOString();
+          
+        await shiftsService.deleteEmployeeShifts(scheduleId, employeeId, startDateISO, endDateISO);
+      }
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['employees', scheduleId] });
+      queryClient.invalidateQueries({ queryKey: ['shifts', scheduleId] });
     },
   });
 
@@ -324,6 +424,18 @@ export default function MainSchedule() {
     try {
       await employeesService.assignProfileToEmployee(employeeId, scheduleId, shiftProfileId);
       
+      // Если профиль снят (null), очищаем расписание сотрудника
+      if (shiftProfileId === null && schedule) {
+        const startDateISO = typeof schedule.startDate === 'string' 
+          ? schedule.startDate 
+          : new Date(schedule.startDate).toISOString();
+        const endDateISO = typeof schedule.endDate === 'string' 
+          ? schedule.endDate 
+          : new Date(schedule.endDate).toISOString();
+          
+        await shiftsService.deleteEmployeeShifts(scheduleId, employeeId, startDateISO, endDateISO);
+      }
+      
       // Если профиль назначен (не null), генерируем смены для этого сотрудника
       if (shiftProfileId && schedule) {
         // Конвертируем даты в ISO формат для API
@@ -367,7 +479,7 @@ export default function MainSchedule() {
 
   // Обработчик добавления сотрудника
   const handleAddEmployee = () => {
-    setEditingEmployeeId('new');
+    setIsAddEmployeeModalOpen(true);
   };
 
   // Получаем даты периода расписания для отображения
@@ -440,6 +552,88 @@ export default function MainSchedule() {
 
   const isLoading = scheduleLoading || employeesLoading || shiftsLoading;
 
+  // Вычисляем период для статистики
+  const periodDates = useMemo(() => {
+    if (!schedule) return null;
+    
+    const startDate = typeof schedule.startDate === 'string' 
+      ? parseISO(schedule.startDate) 
+      : new Date(schedule.startDate);
+    const endDate = typeof schedule.endDate === 'string'
+      ? parseISO(schedule.endDate)
+      : new Date(schedule.endDate);
+    
+    return {
+      start: startOfDay(startDate),
+      end: startOfDay(endDate),
+    };
+  }, [schedule]);
+
+  // Получаем массив всех смен для статистики
+  const allShifts = useMemo(() => {
+    if (!shiftsData) return [];
+    
+    const shiftsArray = Array.isArray(shiftsData) ? shiftsData : shiftsData.items || [];
+    
+    // Применяем оптимистичные обновления
+    const shiftsMap = new Map<string, Shift>();
+    shiftsArray.forEach((shift) => {
+      let dateObj: Date;
+      if (typeof shift.date === 'string') {
+        dateObj = parseISO(shift.date);
+      } else if (isDate(shift.date)) {
+        dateObj = shift.date;
+      } else {
+        dateObj = new Date(shift.date);
+      }
+      const normalizedDate = startOfDay(dateObj);
+      const dateStr = format(normalizedDate, 'yyyy-MM-dd');
+      const key = `${dateStr}-${shift.employeeId}`;
+      shiftsMap.set(key, shift);
+    });
+    
+    // Добавляем оптимистичные обновления
+    Object.values(optimisticShifts).forEach((shift) => {
+      let dateObj: Date;
+      if (typeof shift.date === 'string') {
+        dateObj = parseISO(shift.date);
+      } else if (isDate(shift.date)) {
+        dateObj = shift.date;
+      } else {
+        dateObj = new Date(shift.date);
+      }
+      const normalizedDate = startOfDay(dateObj);
+      const dateStr = format(normalizedDate, 'yyyy-MM-dd');
+      const key = `${dateStr}-${shift.employeeId}`;
+      shiftsMap.set(key, shift);
+    });
+    
+    return Array.from(shiftsMap.values());
+  }, [shiftsData, optimisticShifts]);
+
+  // Компонент статистики для боковой панели
+  const sidebarFooter = useMemo(() => {
+    if (!schedule || !periodDates || !employees || employees.length === 0) {
+      return null;
+    }
+
+    const baseCycleStart = startOfDay(new Date(schedule.startDate));
+
+    return (
+      <EmployeeStatistics
+        employees={sortedEmployees || []}
+        shifts={allShifts}
+        periodStart={periodDates.start}
+        periodEnd={periodDates.end}
+        patternInstances={patternInstances || []}
+        shiftProfiles={shiftProfiles || []}
+        baseCycleStart={baseCycleStart}
+        optimisticShifts={optimisticShifts}
+        hoveredEmployeeId={hoveredEmployeeId}
+      />
+    );
+  }, [schedule, periodDates, sortedEmployees, allShifts, patternInstances, shiftProfiles, optimisticShifts, hoveredEmployeeId]);
+
   const sidebarItems = [
     {
       id: 'schedule',
@@ -474,7 +668,7 @@ export default function MainSchedule() {
   ];
 
   return (
-    <MainLayout sidebarItems={sidebarItems}>
+    <MainLayout sidebarItems={sidebarItems} sidebarFooter={sidebarFooter}>
       <div className="p-8">
         {isLoading && (
           <div className="flex justify-center items-center py-12">
@@ -938,6 +1132,9 @@ export default function MainSchedule() {
                             }
                           }}
                           onEmployeeClone={(employeeId) => cloneEmployeeMutation.mutate(employeeId)}
+                          onEmployeeToggleVisibility={(employeeId, isHidden) => {
+                            toggleVisibilityMutation.mutate({ employeeId, isHidden });
+                          }}
                           onEmployeeMoveUp={handleEmployeeMoveUp}
                           onEmployeeMoveDown={handleEmployeeMoveDown}
                           onEmployeeAssignProfile={handleAssignProfile}
@@ -958,6 +1155,8 @@ export default function MainSchedule() {
                           onPatternOffsetChange={handlePatternOffsetChange}
                           scheduleId={scheduleId}
                           maxCycleLength={maxCycleLength}
+                          onEmployeeMouseEnter={setHoveredEmployeeId}
+                          onEmployeeMouseLeave={() => setHoveredEmployeeId(null)}
                         />
                       </div>
                     ))}
@@ -1009,12 +1208,10 @@ export default function MainSchedule() {
                   scheduleId={scheduleId}
                 />
                 <EditEmployeeModal
-                  isOpen={!!editingEmployeeId}
+                  isOpen={!!editingEmployeeId && editingEmployeeId !== 'new'}
                   onClose={() => setEditingEmployeeId(null)}
                   onSave={async (data) => {
-                    if (editingEmployeeId === 'new') {
-                      await createEmployeeMutation.mutateAsync(data);
-                    } else {
+                    if (editingEmployeeId && editingEmployeeId !== 'new') {
                       await updateEmployeeMutation.mutateAsync(data);
                     }
                   }}
@@ -1022,7 +1219,14 @@ export default function MainSchedule() {
                   departments={schedule.departments || []}
                   positions={positions || []}
                   scheduleId={scheduleId}
-                  isLoading={createEmployeeMutation.isPending || updateEmployeeMutation.isPending}
+                  isLoading={updateEmployeeMutation.isPending}
+                />
+                <AddEmployeeToRosterModal
+                  isOpen={isAddEmployeeModalOpen}
+                  onClose={() => setIsAddEmployeeModalOpen(false)}
+                  scheduleId={scheduleId}
+                  departments={schedule.departments || []}
+                  positions={positions || []}
                 />
                 <LaborViolationsModal
                   isOpen={isLaborViolationsModalOpen}

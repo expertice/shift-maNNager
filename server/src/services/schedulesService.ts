@@ -4,6 +4,7 @@ import { validateSchedule } from './laborLawComplianceService.js';
 
 export interface CreateScheduleData {
   ownerUserId: string;
+  ownerEmail?: string; // Email пользователя из токена для создания, если пользователя нет
   name: string;
   startDate: Date;
   endDate: Date;
@@ -184,9 +185,34 @@ export async function getScheduleById(
  * Создать новое расписание
  */
 export async function createSchedule(data: CreateScheduleData): Promise<Schedule> {
+  // Проверяем существование пользователя
+  let user = await prisma.user.findUnique({
+    where: { id: data.ownerUserId },
+  });
+
+  // Если пользователя нет, но есть email, пытаемся найти по email
+  if (!user && data.ownerEmail) {
+    user = await prisma.user.findUnique({
+      where: { email: data.ownerEmail },
+    });
+    
+    // Если нашли по email, но ID не совпадает - это ошибка
+    if (user && user.id !== data.ownerUserId) {
+      throw new Error(`Пользователь с email ${data.ownerEmail} существует, но ID не совпадает. Пожалуйста, войдите заново.`);
+    }
+  }
+
+  // Если пользователя все еще нет, выбрасываем ошибку
+  if (!user) {
+    throw new Error(
+      `Пользователь с ID ${data.ownerUserId} не найден в базе данных. ` +
+      `Пожалуйста, убедитесь, что вы зарегистрированы и вошли в систему.`
+    );
+  }
+
   return prisma.schedule.create({
     data: {
-      ownerUserId: data.ownerUserId,
+      ownerUserId: user.id, // Используем ID из базы данных
       name: data.name,
       startDate: data.startDate,
       endDate: data.endDate,

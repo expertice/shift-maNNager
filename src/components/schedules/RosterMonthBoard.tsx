@@ -9,7 +9,7 @@ import { ChevronUp, ChevronDown } from 'lucide-react';
 
 export interface RosterMonthBoardProps {
   title: string;
-  employees: { id: string; fullName: string; tabNumber?: string | null; department?: { name: string } | null }[];
+  employees: { id: string; fullName: string; tabNumber?: string | null; department?: { name: string } | null; birthDate?: Date | string | null }[];
   instances: Record<string, { sequence: (string | null)[]; startIndex: number; lockedIndices?: number[] | null; cycleLength?: number }>;
   slice: MonthSlice;
   maxDays: number;
@@ -21,6 +21,7 @@ export interface RosterMonthBoardProps {
   onEmployeeEdit?: (employeeId: string) => void;
   onEmployeeDelete?: (employeeId: string) => void;
   onEmployeeClone?: (employeeId: string) => void;
+  onEmployeeToggleVisibility?: (employeeId: string, isHidden: boolean) => void;
   onEmployeeMoveUp?: (employeeId: string) => void;
   onEmployeeMoveDown?: (employeeId: string) => void;
   onEmployeeAssignProfile?: (employeeId: string, shiftProfileId: string | null) => Promise<void>;
@@ -48,6 +49,8 @@ export interface RosterMonthBoardProps {
   onPatternOffsetChange?: (offsetDelta: number) => Promise<void>;
   scheduleId?: string;
   maxCycleLength?: number;
+  onEmployeeMouseEnter?: (employeeId: string) => void;
+  onEmployeeMouseLeave?: () => void;
 }
 
 export default function RosterMonthBoard({
@@ -64,6 +67,7 @@ export default function RosterMonthBoard({
   onEmployeeEdit,
   onEmployeeDelete,
   onEmployeeClone,
+  onEmployeeToggleVisibility,
   onEmployeeMoveUp,
   onEmployeeMoveDown,
   onEmployeeAssignProfile,
@@ -82,6 +86,8 @@ export default function RosterMonthBoard({
   onPatternOffsetChange,
   scheduleId,
   maxCycleLength = 0,
+  onEmployeeMouseEnter,
+  onEmployeeMouseLeave,
 }: RosterMonthBoardProps) {
   // Используем реальное количество дней в месяце, а не maxDays
   const daysInMonth = slice.daysInMonth;
@@ -335,7 +341,12 @@ export default function RosterMonthBoard({
               const canMoveDown = empIndex < employees.length - 1 && onEmployeeMoveDown;
               
               return (
-                <div key={emp.id} className="flex items-stretch hover:bg-gray-50">
+                <div 
+                  key={emp.id} 
+                  className="flex items-stretch hover:bg-gray-50"
+                  onMouseEnter={() => onEmployeeMouseEnter?.(emp.id)}
+                  onMouseLeave={() => onEmployeeMouseLeave?.()}
+                >
                   <div className="w-48 shrink-0 px-2 py-2 border-r bg-white sticky left-0 z-10 flex items-center gap-2">
                     {/* Кнопки перемещения */}
                     <div className="flex flex-col gap-0.5">
@@ -467,6 +478,7 @@ export default function RosterMonthBoard({
                             ? `${selectedSlot.employeeId}-${selectedSlot.dayIndex}` 
                             : undefined}
                           isSlotSelected={isSlotSelected}
+                          birthDate={emp.birthDate}
                         />
                       </div>
                     ) : (
@@ -584,39 +596,21 @@ export default function RosterMonthBoard({
                 })}
               </div>
             )}
-            {onEmployeeEdit && (
-              <button
-                className="flex items-center gap-2 w-full text-left px-2 py-1 hover:bg-gray-50 rounded text-xs"
-                onClick={() => {
-                  onEmployeeEdit(employeeMenu.employeeId);
-                  setEmployeeMenu(null);
-                }}
-              >
-                Редактировать
-              </button>
-            )}
-            {onEmployeeClone && (
-              <button
-                className="flex items-center gap-2 w-full text-left px-2 py-1 hover:bg-gray-50 rounded text-xs"
-                onClick={() => {
-                  onEmployeeClone(employeeMenu.employeeId);
-                  setEmployeeMenu(null);
-                }}
-              >
-                Копировать
-              </button>
-            )}
-            {onEmployeeDelete && (
-              <button
-                className="flex items-center gap-2 w-full text-left px-2 py-1 hover:bg-red-50 rounded text-xs text-red-600"
-                onClick={() => {
-                  onEmployeeDelete(employeeMenu.employeeId);
-                  setEmployeeMenu(null);
-                }}
-              >
-                Удалить
-              </button>
-            )}
+            {onEmployeeToggleVisibility && (() => {
+              const employee = employees.find(emp => emp.id === employeeMenu.employeeId);
+              const isHidden = employee?.isHidden || false;
+              return (
+                <button
+                  className="flex items-center gap-2 w-full text-left px-2 py-1 hover:bg-gray-50 rounded text-xs"
+                  onClick={() => {
+                    onEmployeeToggleVisibility(employeeMenu.employeeId, !isHidden);
+                    setEmployeeMenu(null);
+                  }}
+                >
+                  {isHidden ? 'Показать' : 'Скрыть'}
+                </button>
+              );
+            })()}
           </div>
         )}
       </div>

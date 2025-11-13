@@ -8,9 +8,10 @@ import { GenerateShiftsModal } from '@components/shifts/GenerateShiftsModal';
 import { CreatePlaceholdersModal } from '@components/shifts/CreatePlaceholdersModal';
 import { EditShiftProfileModal } from '@components/shifts/EditShiftProfileModal';
 import { CompareProfilesModal } from '@components/shifts/CompareProfilesModal';
+import { ImportExportProfilesModal } from '@components/shifts/ImportExportProfilesModal';
 import { shiftProfilesService, schedulesService, employeesService } from '@services/api';
 import { ShiftProfile, EditShiftProfileData } from '@types';
-import { Plus, ArrowLeft, GitCompare, X } from 'lucide-react';
+import { Plus, ArrowLeft, GitCompare, X, Upload } from 'lucide-react';
 
 /**
  * Страница работы с профилями смен
@@ -27,6 +28,7 @@ export default function ShiftProfilesPage() {
   const [comparisonMode, setComparisonMode] = useState(false);
   const [selectedProfileIds, setSelectedProfileIds] = useState<string[]>([]);
   const [isCompareModalOpen, setIsCompareModalOpen] = useState(false);
+  const [isImportExportModalOpen, setIsImportExportModalOpen] = useState(false);
 
   if (!scheduleId) {
     return <div>Ошибка: не указан ID расписания</div>;
@@ -81,16 +83,21 @@ export default function ShiftProfilesPage() {
     }
   }, [employees, scheduleId]);
 
-  // Сортированные сотрудники по сохраненному порядку
+  // Сортированные сотрудники по сохраненному порядку (исключая скрытых)
   const sortedEmployees = useMemo(() => {
-    if (!employees || employeeOrder.length === 0) return employees || [];
+    if (!employees || employeeOrder.length === 0) {
+      // Фильтруем скрытых сотрудников
+      return employees?.filter(emp => !emp.isHidden) || [];
+    }
     const orderMap = new Map(employeeOrder.map((id, index) => [id, index]));
-    const sorted = [...employees].sort((a, b) => {
+    // Фильтруем скрытых сотрудников перед сортировкой
+    const visibleEmployees = employees.filter(emp => !emp.isHidden);
+    const sorted = [...visibleEmployees].sort((a, b) => {
       const aIndex = orderMap.get(a.id) ?? Infinity;
       const bIndex = orderMap.get(b.id) ?? Infinity;
       return aIndex - bIndex;
     });
-    const newEmployees = employees.filter(emp => !orderMap.has(emp.id));
+    const newEmployees = visibleEmployees.filter(emp => !orderMap.has(emp.id));
     return [...sorted, ...newEmployees];
   }, [employees, employeeOrder]);
 
@@ -264,6 +271,29 @@ export default function ShiftProfilesPage() {
     },
   });
 
+  // Импорт профилей смен
+  const importMutation = useMutation({
+    mutationFn: ({ file, mode }: { file: File; mode: 'create' | 'update' | 'mixed' }) =>
+      shiftProfilesService.importShiftProfiles(scheduleId, file, mode),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['shift-profiles', scheduleId] });
+    },
+  });
+
+  // Экспорт профилей смен
+  const exportMutation = useMutation({
+    mutationFn: ({ format, profileIds }: { format: 'json'; profileIds?: string[] }) => 
+      shiftProfilesService.exportShiftProfiles(scheduleId, format, profileIds),
+  });
+
+  const handleImport = async (file: File, mode: 'create' | 'update' | 'mixed') => {
+    return importMutation.mutateAsync({ file, mode });
+  };
+
+  const handleExport = async (format: 'json', profileIds?: string[]) => {
+    return exportMutation.mutateAsync({ format, profileIds });
+  };
+
   const handleDelete = (profileId: string) => {
     const profile = profiles?.find((p) => p.id === profileId);
     if (!profile) return;
@@ -332,6 +362,14 @@ export default function ShiftProfilesPage() {
                 <Button onClick={handleCreateNew} variant="primary" title="Создать профиль">
                   <Plus size={18} className="mr-1" />
                   Создать профиль
+                </Button>
+                <Button 
+                  onClick={() => setIsImportExportModalOpen(true)} 
+                  variant="outline"
+                  title="Импорт / Экспорт профилей"
+                >
+                  <Upload size={18} className="mr-1" />
+                  Импорт / Экспорт
                 </Button>
                 <Button 
                   onClick={() => setComparisonMode(true)} 
@@ -452,6 +490,15 @@ export default function ShiftProfilesPage() {
               selectedProfiles={profiles?.filter((profile) => selectedProfileIds.includes(profile.id)) || []}
               scheduleStartDate={new Date(schedule.startDate)}
               scheduleEndDate={new Date(schedule.endDate)}
+            />
+            <ImportExportProfilesModal
+              isOpen={isImportExportModalOpen}
+              onClose={() => setIsImportExportModalOpen(false)}
+              onImport={handleImport}
+              onExport={handleExport}
+              scheduleId={scheduleId}
+              profiles={profiles?.map(p => ({ id: p.id, name: p.name })) || []}
+              isLoading={importMutation.isPending || exportMutation.isPending}
             />
           </>
         )}

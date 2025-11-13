@@ -24,6 +24,62 @@ router.get('/', employeesController.getEmployees);
 router.post('/', authorize('editor'), employeesController.createEmployee);
 
 /**
+ * GET /api/v1/schedules/:scheduleId/employees/export
+ * Экспорт сотрудников (требует viewer)
+ * Должен быть определен ПЕРЕД /bulk, чтобы не перехватывался
+ */
+router.get(
+  '/export',
+  authorize('viewer'),
+  employeesController.exportEmployees
+);
+
+/**
+ * POST /api/v1/schedules/:scheduleId/employees/import
+ * Импорт сотрудников (требует editor)
+ * Должен быть определен ПЕРЕД /bulk, чтобы не перехватывался
+ */
+router.post(
+  '/import',
+  authorize('editor'),
+  employeesController.uploadFile,
+  employeesController.importEmployees
+);
+
+/**
+ * PUT /api/v1/schedules/:scheduleId/employees/bulk
+ * Массовое обновление сотрудников (требует editor)
+ * Должен быть определен ПЕРЕД /:id, чтобы не перехватывался
+ */
+router.put(
+  '/bulk',
+  authorize('editor'),
+  employeesController.bulkUpdateEmployees
+);
+
+/**
+ * DELETE /api/v1/schedules/:scheduleId/employees/bulk
+ * Массовое удаление сотрудников (требует editor)
+ * Должен быть определен ПЕРЕД /:id, чтобы не перехватывался
+ */
+router.delete(
+  '/bulk',
+  authorize('editor'),
+  employeesController.bulkDeleteEmployees
+);
+
+/**
+ * PUT /api/v1/schedules/:scheduleId/employees/bulk-visibility
+ * Массовое обновление видимости сотрудников (требует editor)
+ * Должен быть определен ПЕРЕД /:id, чтобы не перехватывался
+ */
+router.put(
+  '/bulk-visibility',
+  authorize('editor'),
+  employeesController.bulkUpdateEmployeeVisibility
+);
+
+/**
  * POST /api/v1/schedules/:scheduleId/employees/bulk-placeholders
  * Создать болванчиков-сотрудников (только editor/owner)
  * Должен быть определен ПЕРЕД /:id, чтобы не перехватывался

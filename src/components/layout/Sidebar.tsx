@@ -1,6 +1,7 @@
 import React from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import classNames from 'classnames';
+import { useUIStore } from '@store/useUIStore';
 
 export interface SidebarItem {
   id: string;
@@ -14,41 +15,83 @@ export interface SidebarItem {
 export interface SidebarProps {
   items: SidebarItem[];
   className?: string;
+  footer?: React.ReactNode;
 }
 
 /**
  * Боковая панель навигации
  */
-export const Sidebar: React.FC<SidebarProps> = ({ items, className }) => {
+export const Sidebar: React.FC<SidebarProps> = ({ items, className, footer }) => {
   const location = useLocation();
+  const { sidebarCollapsed, toggleSidebar } = useUIStore();
 
   return (
     <aside
       className={classNames(
-        'w-64 bg-white border-r border-gray-200 h-full overflow-y-auto',
+        'fixed left-0 top-16 bottom-0 bg-white border-r border-gray-200 overflow-y-auto transition-all duration-300 z-40 flex flex-col',
+        sidebarCollapsed ? 'w-16' : 'w-64',
         className
       )}
     >
-      <nav className="p-4 space-y-1">
+      {/* Кнопка сворачивания */}
+      <div className="p-2 border-b border-gray-200 flex-shrink-0">
+        <button
+          onClick={toggleSidebar}
+          className="w-full flex items-center justify-center p-2 rounded-lg hover:bg-gray-100 transition-colors"
+          aria-label={sidebarCollapsed ? 'Развернуть меню' : 'Свернуть меню'}
+        >
+          <svg
+            className="w-5 h-5 text-gray-600"
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+          >
+            {sidebarCollapsed ? (
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M9 5l7 7-7 7"
+              />
+            ) : (
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M15 19l-7-7 7-7"
+              />
+            )}
+          </svg>
+        </button>
+      </div>
+
+      <nav className="p-4 space-y-1 flex-1">
         {items.map((item) => {
           const isActive = item.path && location.pathname.startsWith(item.path);
           const content = (
             <div
               className={classNames(
-                'flex items-center justify-between px-4 py-3 rounded-lg transition-colors',
+                'flex items-center justify-between rounded-lg transition-colors',
+                sidebarCollapsed ? 'px-2 py-3 justify-center' : 'px-4 py-3',
                 isActive
                   ? 'bg-primary text-white'
                   : 'text-gray-700 hover:bg-gray-100'
               )}
+              title={sidebarCollapsed ? item.label : undefined}
             >
-              <div className="flex items-center space-x-3">
-                {item.icon && <span className="w-5 h-5">{item.icon}</span>}
-                <span className="font-medium">{item.label}</span>
+              <div className={classNames(
+                'flex items-center',
+                sidebarCollapsed ? 'justify-center' : 'space-x-3'
+              )}>
+                {item.icon && <span className="w-5 h-5 flex-shrink-0">{item.icon}</span>}
+                {!sidebarCollapsed && (
+                  <span className="font-medium whitespace-nowrap">{item.label}</span>
+                )}
               </div>
-              {item.badge && (
+              {!sidebarCollapsed && item.badge && (
                 <span
                   className={classNames(
-                    'px-2 py-1 text-xs rounded-full',
+                    'px-2 py-1 text-xs rounded-full flex-shrink-0',
                     isActive ? 'bg-white text-primary' : 'bg-primary text-white'
                   )}
                 >
@@ -77,6 +120,9 @@ export const Sidebar: React.FC<SidebarProps> = ({ items, className }) => {
           );
         })}
       </nav>
+
+      {/* Футер с дополнительным контентом (статистика) */}
+      {footer && <div className="flex-shrink-0">{footer}</div>}
     </aside>
   );
 };
