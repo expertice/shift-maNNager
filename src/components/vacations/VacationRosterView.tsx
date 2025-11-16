@@ -6,8 +6,12 @@ import { SlotView } from '@components/shifts/PatternConstructor';
 import { Vacation, Employee, Shift } from '@types';
 import { splitPeriodByMonths } from '@/utils/rosterCalendar';
 import { isBirthday } from '@/utils/vacationCalendarUtils';
+import { useQuery } from '@tanstack/react-query';
+import { vacationRulesService } from '@services/api/vacationRulesService';
+import { parseLocalDate } from '@/utils/dateUtils';
 
 export interface VacationRosterViewProps {
+  scheduleId: string;
   scheduleStart: Date;
   scheduleEnd: Date;
   employees: Employee[];
@@ -41,6 +45,10 @@ const EmployeeRow = memo(({
   isDateInVacation,
   isDateInSelection,
   getShiftForDate,
+  getVacationDayNumber,
+  getRemainingDays,
+  isLatestVacationDay,
+  isDateBlocked,
 }: {
   employee: Employee;
   monthDays: Date[];
@@ -56,6 +64,10 @@ const EmployeeRow = memo(({
   isDateInVacation: (date: Date, employeeId: string) => boolean;
   isDateInSelection: (date: Date, employeeId: string) => boolean;
   getShiftForDate: (date: Date, employeeId: string) => Shift | null;
+  getVacationDayNumber: (date: Date, employeeId: string) => number | null;
+  getRemainingDays: (employeeId: string) => number | null;
+  isLatestVacationDay: (date: Date, employeeId: string) => boolean;
+  isDateBlocked: (date: Date) => boolean;
 }) => {
   const employeeVacations = vacationsByEmployee.get(employee.id) || [];
 
@@ -89,7 +101,12 @@ const EmployeeRow = memo(({
       <div className="flex-1 px-2 py-2">
         <div
           className="flex items-center flex-nowrap gap-2"
-          style={{ transform: `scaleX(${scaleX})`, transformOrigin: 'left center', width: 'max-content' }}
+          style={{ 
+            transform: `scaleX(${scaleX})`, 
+            transformOrigin: 'left center', 
+            width: 'max-content',
+            minWidth: '100%'
+          }}
         >
           {monthDays.map((day) => {
             const inVacation = isDateInVacation(day, employee.id);
@@ -98,27 +115,53 @@ const EmployeeRow = memo(({
             const shiftType = shift?.shiftTypeId
               ? shiftTypes.find(st => st.id === shift.shiftTypeId)
               : null;
+            
+            // Логирование для отладки (только для первых нескольких дней)
+            if (shift && !shiftType && day.getDate() <= 3) {
+              console.log('[VacationRosterView] Shift found but shiftType not found', {
+                employeeId: employee.id,
+                employeeName: employee.fullName,
+                date: format(day, 'yyyy-MM-dd'),
+                shiftId: shift.id,
+                shiftTypeId: shift.shiftTypeId,
+                availableShiftTypeIds: shiftTypes.map(st => st.id),
+                shiftHasShiftType: !!shift.shiftType,
+                shiftShiftTypeName: shift.shiftType?.name,
+              });
+            }
             const isBday = isBirthday(day, employee.birthDate);
             const isWeekend = getDay(day) === 0 || getDay(day) === 6;
             const isClicked = clickedDate && 
               clickedDate.employeeId === employee.id && 
               isSameDay(day, clickedDate.date);
+            const vacationDayNumber = inVacation ? getVacationDayNumber(day, employee.id) : null;
+            const isLatestDay = isLatestVacationDay(day, employee.id);
+            const remainingDays = isLatestDay ? getRemainingDays(employee.id) : null;
+            const isBlocked = !inVacation && isDateBlocked(day);
 
             return (
               <div
                 key={day.toISOString()}
                 className={classNames(
-                  'relative cursor-pointer transition-all',
+                  'relative transition-all',
                   {
                     'ring-2 ring-blue-500 ring-offset-2': isClicked,
+                    'cursor-pointer': !isBlocked,
+                    'cursor-not-allowed opacity-50': isBlocked,
                   }
                 )}
-                onClick={() => onDateClick(employee.id, day)}
-                title={format(day, 'dd.MM.yyyy', { locale: ru })}
+                onClick={() => !isBlocked && onDateClick(employee.id, day)}
+                title={
+                  isBlocked
+                    ? 'Недоступно: достигнут лимит одновременных отпусков'
+                    : format(day, 'dd.MM.yyyy', { locale: ru })
+                }
               >
                 <SlotView
                   label={
-                    inVacation || inSelection
+                    inVacation
+                      ? vacationDayNumber?.toString()
+                      : inSelection
                       ? undefined
                       : shiftType
                       ? shiftType.name?.charAt(0).toUpperCase() || '?'
@@ -133,18 +176,33 @@ const EmployeeRow = memo(({
                       ? shiftType.color
                       : undefined
                   }
-                  isEmpty={!shiftType && !inVacation && !inSelection}
+                  isEmpty={!shiftType && !inVacation && !inSelection && !isBlocked}
                   isDragging={false}
                   className={classNames('h-8', {
                     'border-yellow-400 bg-yellow-100': inVacation,
                     'border-blue-400 bg-blue-100': inSelection && !inVacation,
-                    'opacity-30': shiftType && !inVacation && !inSelection, // бледный цвет для смен
+                    'border-gray-300 bg-gray-200': isBlocked,
+                    'opacity-30': shiftType && !inVacation && !inSelection && !isBlocked, // бледный цвет для смен
+                    'opacity-50': isBlocked,
                   })}
                   textClassName={classNames({
-                    'text-gray-700': !isWeekend,
-                    'text-red-600': isWeekend,
+                    'text-gray-700': !isWeekend && !inVacation,
+                    'text-red-600': isWeekend && !inVacation,
+                    'text-yellow-900 font-semibold': inVacation,
                   })}
                 />
+                
+                {/* Подсказка с оставшимися днями над последним днем отпуска */}
+                {isLatestDay && remainingDays !== null && (
+                  <div
+                    className="absolute -top-6 left-1/2 transform -translate-x-1/2 z-50 pointer-events-none whitespace-nowrap"
+                    title={`Осталось дней отпуска: ${remainingDays}`}
+                  >
+                    <div className="bg-yellow-600 text-white text-xs px-2 py-1 rounded shadow-lg">
+                      Осталось: {remainingDays}
+                    </div>
+                  </div>
+                )}
                 
                 {/* Отметка дня рождения */}
                 {isBday && (
@@ -155,6 +213,7 @@ const EmployeeRow = memo(({
                       fontSize: '16px',
                       lineHeight: '1',
                       filter: 'drop-shadow(0 2px 4px rgba(0,0,0,0.3))',
+                      marginTop: isLatestDay ? '-24px' : '0',
                     }}
                   >
                     👑
@@ -187,6 +246,10 @@ const MonthBoard = memo(({
   isDateInSelection,
   getShiftForDate,
   getWeekdayAbbr,
+  getVacationDayNumber,
+  getRemainingDays,
+  isLatestVacationDay,
+  isDateBlocked,
 }: {
   monthSlice: { year: number; month: number; daysInMonth: number };
   employees: Employee[];
@@ -202,6 +265,10 @@ const MonthBoard = memo(({
   isDateInSelection: (date: Date, employeeId: string) => boolean;
   getShiftForDate: (date: Date, employeeId: string) => Shift | null;
   getWeekdayAbbr: (date: Date) => string;
+  getVacationDayNumber: (date: Date, employeeId: string) => number | null;
+  getRemainingDays: (employeeId: string) => number | null;
+  isLatestVacationDay: (date: Date, employeeId: string) => boolean;
+  isDateBlocked: (date: Date) => boolean;
 }) => {
   const monthStart = startOfMonth(new Date(monthSlice.year, monthSlice.month, 1));
   const monthEnd = endOfMonth(monthStart);
@@ -302,6 +369,10 @@ const MonthBoard = memo(({
               isDateInVacation={isDateInVacation}
               isDateInSelection={isDateInSelection}
               getShiftForDate={getShiftForDate}
+              getVacationDayNumber={getVacationDayNumber}
+              getRemainingDays={getRemainingDays}
+              isLatestVacationDay={isLatestVacationDay}
+              isDateBlocked={isDateBlocked}
             />
           ))}
         </div>
@@ -313,6 +384,7 @@ const MonthBoard = memo(({
 MonthBoard.displayName = 'MonthBoard';
 
 export default function VacationRosterView({
+  scheduleId,
   scheduleStart,
   scheduleEnd,
   employees,
@@ -325,6 +397,32 @@ export default function VacationRosterView({
   selectedEmployeeId,
   clickedDate,
 }: VacationRosterViewProps) {
+  const currentYear = new Date().getFullYear();
+  
+  // Загружаем выделения дней отпуска для всех сотрудников
+  const { data: allocations } = useQuery({
+    queryKey: ['vacationAllocations', scheduleId, currentYear],
+    queryFn: () => vacationRulesService.getEmployeeAllocations(scheduleId, currentYear),
+    enabled: !!scheduleId,
+  });
+
+  // Загружаем правила отпусков для получения maxConcurrentEmployees
+  const { data: vacationRules } = useQuery({
+    queryKey: ['vacationRules', scheduleId],
+    queryFn: () => vacationRulesService.getVacationRules(scheduleId),
+    enabled: !!scheduleId,
+  });
+
+  // Создаем Map для быстрого доступа к выделениям по employeeId
+  const allocationsByEmployee = useMemo(() => {
+    const map = new Map<string, number>();
+    if (allocations) {
+      allocations.forEach(allocation => {
+        map.set(allocation.employeeId, allocation.allocatedDays);
+      });
+    }
+    return map;
+  }, [allocations]);
   // Разбиваем период на месяцы
   const months = useMemo(() => {
     return splitPeriodByMonths(scheduleStart, scheduleEnd);
@@ -347,8 +445,8 @@ export default function VacationRosterView({
     const employeeVacations = vacationsByEmployee.get(employeeId) || [];
     const checkDate = startOfDay(date);
     return employeeVacations.some(vacation => {
-      const start = startOfDay(new Date(vacation.startDate));
-      const end = startOfDay(new Date(vacation.endDate));
+      const start = parseLocalDate(vacation.startDate);
+      const end = parseLocalDate(vacation.endDate);
       return checkDate >= start && checkDate <= end;
     });
   }, [vacationsByEmployee]);
@@ -356,9 +454,24 @@ export default function VacationRosterView({
   // Получаем смену для даты и сотрудника
   const getShiftForDate = useCallback((date: Date, employeeId: string): Shift | null => {
     if (!shiftsByDateAndEmployee) return null;
-    const dateStr = format(date, 'yyyy-MM-dd');
+    const dateStr = format(startOfDay(date), 'yyyy-MM-dd');
     const key = `${dateStr}-${employeeId}`;
-    return shiftsByDateAndEmployee.get(key) || null;
+    const shift = shiftsByDateAndEmployee.get(key) || null;
+    
+    // Логирование для отладки (только для первых нескольких дней и первых сотрудников)
+    if (date.getDate() <= 3 && employeeId && !shift) {
+      const sampleKeys = Array.from(shiftsByDateAndEmployee.keys()).slice(0, 5);
+      console.log('[VacationRosterView] Shift not found for date', {
+        date: dateStr,
+        employeeId,
+        key,
+        mapSize: shiftsByDateAndEmployee.size,
+        sampleKeys,
+        note: 'This might indicate a mismatch in date normalization or employeeId',
+      });
+    }
+    
+    return shift;
   }, [shiftsByDateAndEmployee]);
 
   // Проверяем, находится ли дата в выбранном диапазоне
@@ -385,6 +498,108 @@ export default function VacationRosterView({
     return weekdayMap[dayOfWeek] || '';
   }, []);
 
+  // Вычисляем номер дня в отпуске для даты
+  const getVacationDayNumber = useCallback((date: Date, employeeId: string): number | null => {
+    const employeeVacations = vacationsByEmployee.get(employeeId) || [];
+    const checkDate = startOfDay(date);
+    
+    for (const vacation of employeeVacations) {
+      const start = parseLocalDate(vacation.startDate);
+      const end = parseLocalDate(vacation.endDate);
+      
+      if (checkDate >= start && checkDate <= end) {
+        // Вычисляем номер дня в этом периоде отпуска
+        const daysDiff = Math.ceil((checkDate.getTime() - start.getTime()) / (1000 * 60 * 60 * 24));
+        return daysDiff + 1; // +1 потому что первый день = день 1
+      }
+    }
+    
+    return null;
+  }, [vacationsByEmployee]);
+
+  // Проверяем, является ли дата последним днем отпуска
+  const latestVacationEndByEmployee = useMemo(() => {
+    const map = new Map<string, Date>();
+    vacations.forEach(vacation => {
+      const end = parseLocalDate(vacation.endDate);
+      const existing = map.get(vacation.employeeId);
+      if (!existing || end > existing) {
+        map.set(vacation.employeeId, end);
+      }
+    });
+    return map;
+  }, [vacations]);
+
+  const isLatestVacationDay = useCallback((date: Date, employeeId: string): boolean => {
+    const latestEnd = latestVacationEndByEmployee.get(employeeId);
+    if (!latestEnd) return false;
+    const checkDate = startOfDay(date);
+    return checkDate.getTime() === latestEnd.getTime();
+  }, [latestVacationEndByEmployee]);
+
+  // Вычисляем количество сотрудников в отпуске на дату
+  const getVacationCountOnDate = useCallback((date: Date): number => {
+    const checkDate = startOfDay(date);
+    let count = 0;
+    
+    // Подсчитываем уникальных сотрудников в отпуске на эту дату
+    const employeesOnVacation = new Set<string>();
+    
+    vacations.forEach(vacation => {
+      if (vacation.status !== 'approved' && vacation.status !== 'pending') return;
+      
+      const start = parseLocalDate(vacation.startDate);
+      const end = parseLocalDate(vacation.endDate);
+      
+      if (checkDate >= start && checkDate <= end) {
+        employeesOnVacation.add(vacation.employeeId);
+      }
+    });
+    
+    return employeesOnVacation.size;
+  }, [vacations]);
+
+  // Проверяем, заблокирована ли дата (достигнут лимит одновременных отпусков)
+  const isDateBlocked = useCallback((date: Date): boolean => {
+    if (!vacationRules?.maxConcurrentEmployees || vacationRules.maxConcurrentEmployees <= 0) {
+      return false;
+    }
+    
+    const count = getVacationCountOnDate(date);
+    return count >= vacationRules.maxConcurrentEmployees;
+  }, [vacationRules, getVacationCountOnDate]);
+
+  // Вычисляем оставшиеся дни отпуска для сотрудника
+  const getRemainingDays = useCallback((employeeId: string): number | null => {
+    const allocatedDays = allocationsByEmployee.get(employeeId);
+    if (!allocatedDays) return null;
+
+    const employeeVacations = vacationsByEmployee.get(employeeId) || [];
+    let usedDays = 0;
+
+    // Вычисляем использованные дни за текущий год
+    const yearStart = new Date(currentYear, 0, 1);
+    const yearEnd = new Date(currentYear, 11, 31, 23, 59, 59);
+
+    for (const vacation of employeeVacations) {
+      if (vacation.status !== 'approved' && vacation.status !== 'pending') continue;
+      
+      const start = parseLocalDate(vacation.startDate);
+      const end = parseLocalDate(vacation.endDate);
+      
+      // Проверяем пересечение с текущим годом
+      if (end < yearStart || start > yearEnd) continue;
+      
+      const actualStart = start < yearStart ? yearStart : start;
+      const actualEnd = end > yearEnd ? yearEnd : end;
+      
+      const days = Math.ceil((actualEnd.getTime() - actualStart.getTime()) / (1000 * 60 * 60 * 24)) + 1;
+      usedDays += days;
+    }
+
+    return Math.max(0, allocatedDays - usedDays);
+  }, [allocationsByEmployee, vacationsByEmployee, currentYear]);
+
   return (
     <div className="w-full overflow-x-hidden">
       {months.map((monthSlice) => (
@@ -404,6 +619,10 @@ export default function VacationRosterView({
           isDateInSelection={isDateInSelection}
           getShiftForDate={getShiftForDate}
           getWeekdayAbbr={getWeekdayAbbr}
+          getVacationDayNumber={getVacationDayNumber}
+          getRemainingDays={getRemainingDays}
+          isLatestVacationDay={isLatestVacationDay}
+          isDateBlocked={isDateBlocked}
         />
       ))}
     </div>

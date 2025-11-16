@@ -15,7 +15,8 @@ import {
 } from '../services/laborLawComplianceService.js';
 import { 
   calculateWorkingHours,
-  calculateProductionCalendar 
+  calculateProductionCalendar,
+  calculateMonthlyHoursNorm
 } from '../services/productionCalendarService.js';
 import prisma from '../lib/prisma.js';
 import { LaborViolationType, ViolationSeverity } from '@prisma/client';
@@ -374,6 +375,42 @@ export async function getViolationStatsController(
     res.json({
       success: true,
       data: stats,
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * Получить месячные нормы часов для года
+ */
+export async function getMonthlyHoursNormsController(
+  req: AuthRequest,
+  res: Response<ApiResponse>,
+  next: NextFunction
+): Promise<void> {
+  try {
+    const year = parseInt(req.params.year);
+    const weeklyHours = req.query.weeklyHours ? parseFloat(req.query.weeklyHours as string) : 40;
+
+    if (isNaN(year)) {
+      res.status(400).json({
+        success: false,
+        error: 'Неверный формат года',
+      });
+      return;
+    }
+
+    const monthlyNorms: { month: number; hours: number }[] = [];
+    
+    for (let month = 1; month <= 12; month++) {
+      const hours = await calculateMonthlyHoursNorm(year, month, weeklyHours);
+      monthlyNorms.push({ month, hours });
+    }
+
+    res.json({
+      success: true,
+      data: monthlyNorms,
     });
   } catch (error) {
     next(error);

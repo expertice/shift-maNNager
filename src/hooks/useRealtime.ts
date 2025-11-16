@@ -34,6 +34,7 @@ export function useRealtime(
       'vacation_deleted',
       'vacation_conflict',
       'conflict_detected',
+      'roster:updated', // Обновление ростера (паттерны, порядок сотрудников)
     ];
 
     eventHandlers.forEach((eventType) => {

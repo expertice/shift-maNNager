@@ -1,8 +1,9 @@
 import React, { useState, useMemo, useRef, useEffect, useCallback } from 'react';
 import { format, startOfDay, isSameDay, isBefore } from 'date-fns';
+import { parseLocalDate } from '@/utils/dateUtils';
 import { ru } from 'date-fns/locale';
 import classNames from 'classnames';
-import { Button, Select, Card, Badge } from '@components/common';
+import { Button, Select, Modal } from '@components/common';
 import { Vacation, Employee, Shift } from '@types';
 import CompactAnnualCalendar from './CompactAnnualCalendar';
 import VacationRosterView from './VacationRosterView';
@@ -50,6 +51,7 @@ export default function VacationScheduler({
   const [isCreating, setIsCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [clickedDate, setClickedDate] = useState<{ employeeId: string; date: Date } | null>(null);
+  const [isErrorModalOpen, setIsErrorModalOpen] = useState(false);
   const clickedDateTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   // Очищаем таймер при размонтировании
@@ -65,8 +67,8 @@ export default function VacationScheduler({
   const getVacationForDate = (date: Date, employeeId: string): Vacation | null => {
     return vacations.find(v => {
       if (v.employeeId !== employeeId) return false;
-      const start = startOfDay(new Date(v.startDate));
-      const end = startOfDay(new Date(v.endDate));
+      const start = parseLocalDate(v.startDate);
+      const end = parseLocalDate(v.endDate);
       const checkDate = startOfDay(date);
       return checkDate >= start && checkDate <= end;
     }) || null;
@@ -76,6 +78,7 @@ export default function VacationScheduler({
   const handleCompactDateClick = (date: Date) => {
     if (!selectedEmployeeId) {
       setError('Выберите сотрудника');
+      setIsErrorModalOpen(true);
       return;
     }
 
@@ -152,6 +155,7 @@ export default function VacationScheduler({
       // Второй клик - конец периода
       if (employeeId !== selectedEmployeeId) {
         setError('Выберите даты для того же сотрудника');
+        setIsErrorModalOpen(true);
         return;
       }
 
@@ -182,7 +186,7 @@ export default function VacationScheduler({
     setError(null);
 
     try {
-      await vacationsService.createVacation(scheduleId, {
+      const result = await vacationsService.createVacation(scheduleId, {
         employeeId,
         startDate: format(startOfDay(start), 'yyyy-MM-dd'),
         endDate: format(startOfDay(end), 'yyyy-MM-dd'),
@@ -194,11 +198,36 @@ export default function VacationScheduler({
       setSelectionEnd(null);
       setClickedDate(null);
       
+      // Показываем предупреждение, если оно есть
+      if (result.warning) {
+        setError(result.warning);
+        setIsErrorModalOpen(true);
+      }
+      
       if (onVacationCreated) {
         onVacationCreated();
       }
     } catch (err: any) {
-      setError(err.message || 'Ошибка при создании отпуска');
+      // Извлекаем понятное сообщение об ошибке
+      // Приоритет: message > error (код) > стандартное сообщение
+      let errorMessage = 'Ошибка при создании отпуска';
+      
+      if (err.response?.data?.message) {
+        errorMessage = err.response.data.message;
+      } else if (err.message) {
+        errorMessage = err.message;
+      } else if (err.response?.data?.error) {
+        // Если есть только код ошибки, создаем понятное сообщение
+        const errorCode = err.response.data.error;
+        if (errorCode === 'INTERNAL_SERVER_ERROR') {
+          errorMessage = 'Произошла внутренняя ошибка сервера. Пожалуйста, попробуйте позже или обратитесь к администратору.';
+        } else {
+          errorMessage = errorCode;
+        }
+      }
+      
+      setError(errorMessage);
+      setIsErrorModalOpen(true);
       // Не сбрасываем выбор при ошибке, чтобы пользователь мог исправить
     } finally {
       setIsCreating(false);
@@ -223,7 +252,26 @@ export default function VacationScheduler({
         onVacationDeleted();
       }
     } catch (err: any) {
-      setError(err.message || 'Ошибка при удалении отпуска');
+      // Извлекаем понятное сообщение об ошибке
+      // Приоритет: message > error (код) > стандартное сообщение
+      let errorMessage = 'Ошибка при удалении отпуска';
+      
+      if (err.response?.data?.message) {
+        errorMessage = err.response.data.message;
+      } else if (err.message) {
+        errorMessage = err.message;
+      } else if (err.response?.data?.error) {
+        // Если есть только код ошибки, создаем понятное сообщение
+        const errorCode = err.response.data.error;
+        if (errorCode === 'INTERNAL_SERVER_ERROR') {
+          errorMessage = 'Произошла внутренняя ошибка сервера. Пожалуйста, попробуйте позже или обратитесь к администратору.';
+        } else {
+          errorMessage = errorCode;
+        }
+      }
+      
+      setError(errorMessage);
+      setIsErrorModalOpen(true);
     }
   };
 
@@ -232,22 +280,54 @@ export default function VacationScheduler({
     return employees.filter(emp => !emp.isHidden);
   }, [employees]);
 
+  // Определяем тип сообщения (предупреждение или ошибка)
+  const isWarning = error && (error.includes('Осталось') || error.includes('рекомендуется'));
+
   return (
     <div className="flex flex-col">
-      <div className="space-y-4 flex-shrink-0">
-
-        {/* Сообщение об ошибке */}
-        {error && (
-          <div className="p-3 bg-red-50 border border-red-200 rounded-lg">
-            <p className="text-sm text-red-800">{error}</p>
+      {/* Модальное окно с ошибкой или предупреждением */}
+      <Modal
+        isOpen={isErrorModalOpen}
+        onClose={() => {
+          setIsErrorModalOpen(false);
+          setError(null);
+        }}
+        title={isWarning ? 'Предупреждение' : 'Ошибка'}
+        size="md"
+      >
+        <div className="space-y-4">
+          <div className={`p-4 rounded-lg ${
+            isWarning
+              ? 'bg-yellow-50 border border-yellow-200'
+              : 'bg-red-50 border border-red-200'
+          }`}>
+            <p className={`text-sm ${
+              isWarning
+                ? 'text-yellow-800'
+                : 'text-red-800'
+            }`}>
+              {error}
+            </p>
           </div>
-        )}
-      </div>
+          <div className="flex justify-end">
+            <Button
+              onClick={() => {
+                setIsErrorModalOpen(false);
+                setError(null);
+              }}
+              variant={isWarning ? 'default' : 'danger'}
+            >
+              Понятно
+            </Button>
+          </div>
+        </div>
+      </Modal>
 
       {/* Отображение календаря */}
       <div className="mt-4">
         {viewMode === 'compact' ? (
             <CompactAnnualCalendar
+              scheduleId={scheduleId}
               scheduleStart={scheduleStart}
               scheduleEnd={scheduleEnd}
               selectedEmployeeId={selectedEmployeeId}
@@ -262,6 +342,7 @@ export default function VacationScheduler({
             />
         ) : (
           <VacationRosterView
+            scheduleId={scheduleId}
             scheduleStart={scheduleStart}
             scheduleEnd={scheduleEnd}
             employees={visibleEmployees}
@@ -277,58 +358,6 @@ export default function VacationScheduler({
         )}
       </div>
 
-      {/* Список существующих отпусков */}
-      {vacations.length > 0 && (
-        <Card className="mt-6">
-          <h3 className="text-lg font-semibold mb-4">Текущие отпуска</h3>
-          <div className="space-y-2">
-            {vacations.map((vacation) => {
-              const employee = visibleEmployees.find(e => e.id === vacation.employeeId);
-              return (
-                <div
-                  key={vacation.id}
-                  className="flex items-center justify-between p-3 bg-gray-50 rounded-lg"
-                >
-                  <div>
-                    <div className="font-medium">
-                      {employee?.fullName || 'Неизвестный сотрудник'}
-                    </div>
-                    <div className="text-sm text-gray-600">
-                      {format(new Date(vacation.startDate), 'dd.MM.yyyy', { locale: ru })} -{' '}
-                      {format(new Date(vacation.endDate), 'dd.MM.yyyy', { locale: ru })}
-                    </div>
-                  </div>
-                  <div className="flex items-center space-x-2">
-                    <Badge
-                      variant={
-                        vacation.status === 'approved'
-                          ? 'success'
-                          : vacation.status === 'rejected'
-                          ? 'danger'
-                          : 'default'
-                      }
-                    >
-                      {vacation.status === 'approved'
-                        ? 'Утвержден'
-                        : vacation.status === 'rejected'
-                        ? 'Отклонен'
-                        : 'Ожидает'}
-                    </Badge>
-                    <Button
-                      size="sm"
-                      variant="danger"
-                      onClick={() => handleDeleteVacation(vacation.id)}
-                      disabled={isCreating}
-                    >
-                      Удалить
-                    </Button>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </Card>
-      )}
     </div>
   );
 }

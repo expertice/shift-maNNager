@@ -67,7 +67,20 @@ export const Sidebar: React.FC<SidebarProps> = ({ items, className, footer }) =>
 
       <nav className="p-4 space-y-1 flex-1">
         {items.map((item) => {
-          const isActive = item.path && location.pathname.startsWith(item.path);
+          // Для кнопки "Расписание" проверяем точное совпадение пути
+          // Для остальных - проверяем, что путь начинается с item.path, но не равен базовому пути расписания
+          let isActive = false;
+          if (item.path) {
+            if (item.id === 'schedule') {
+              // Точное совпадение для "Расписание"
+              isActive = location.pathname === item.path || location.pathname === `${item.path}/`;
+            } else {
+              // Для остальных - startsWith, но исключаем базовый путь расписания
+              const baseSchedulePath = items.find(i => i.id === 'schedule')?.path;
+              isActive = location.pathname.startsWith(item.path) && 
+                        (baseSchedulePath ? location.pathname !== baseSchedulePath && location.pathname !== `${baseSchedulePath}/` : true);
+            }
+          }
           const content = (
             <div
               className={classNames(
@@ -75,7 +88,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ items, className, footer }) =>
                 sidebarCollapsed ? 'px-2 py-3 justify-center' : 'px-4 py-3',
                 isActive
                   ? 'bg-primary text-white'
-                  : 'text-gray-700 hover:bg-gray-100'
+                  : 'text-gray-700'
               )}
               title={sidebarCollapsed ? item.label : undefined}
             >

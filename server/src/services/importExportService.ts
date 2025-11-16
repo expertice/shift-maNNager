@@ -9,7 +9,7 @@ export interface ImportRow {
   tabNumber: string;
   department?: string;
   position?: string;
-  birthDate?: string;
+  birthDate?: string | number; // Может быть строкой (CSV) или числом (Excel serial date)
 }
 
 export interface ValidationError {
@@ -54,18 +54,27 @@ export function parseCSVFile(buffer: Buffer): ImportRow[] {
  */
 export function parseExcelFile(buffer: Buffer): ImportRow[] {
   try {
-    const workbook = XLSX.read(buffer, { type: 'buffer' });
+    const workbook = XLSX.read(buffer, { type: 'buffer', cellDates: false });
     const sheetName = workbook.SheetNames[0];
     const worksheet = workbook.Sheets[sheetName];
-    const records = XLSX.utils.sheet_to_json(worksheet) as Record<string, any>[];
+    // Используем raw: true, чтобы сохранить числа как числа (для Excel serial dates)
+    const records = XLSX.utils.sheet_to_json(worksheet, { raw: true }) as Record<string, any>[];
 
-    return records.map((record) => ({
-      fullName: record['ФИО'] || record['fullName'] || record['Full Name'] || '',
-      tabNumber: String(record['Табельный номер'] || record['tabNumber'] || record['Tab Number'] || ''),
-      department: record['Отдел'] || record['department'] || record['Department'] || undefined,
-      position: record['Должность'] || record['position'] || record['Position'] || undefined,
-      birthDate: record['Дата рождения'] || record['birthDate'] || record['Birth Date'] || undefined,
-    }));
+    return records.map((record) => {
+      // Извлекаем дату рождения - может быть строкой или числом (Excel serial date)
+      const birthDateValue = record['Дата рождения'] || record['birthDate'] || record['Birth Date'];
+      
+      return {
+        fullName: record['ФИО'] || record['fullName'] || record['Full Name'] || '',
+        tabNumber: String(record['Табельный номер'] || record['tabNumber'] || record['Tab Number'] || ''),
+        department: record['Отдел'] || record['department'] || record['Department'] || undefined,
+        position: record['Должность'] || record['position'] || record['Position'] || undefined,
+        // Сохраняем как есть (может быть строкой или числом) - parseBirthDate обработает оба случая
+        birthDate: birthDateValue !== undefined && birthDateValue !== null && birthDateValue !== '' 
+          ? birthDateValue
+          : undefined,
+      };
+    });
   } catch (error) {
     throw new Error('Ошибка при парсинге Excel файла');
   }
@@ -170,6 +179,88 @@ async function getOrCreatePosition(
 }
 
 /**
+ * Парсинг даты из строки или числа (поддержка различных форматов)
+ */
+function parseBirthDate(value: string | number | undefined | null): Date | undefined {
+  if (!value) {
+    return undefined;
+  }
+
+  // Если значение - число (Excel serial date)
+  if (typeof value === 'number') {
+    // Excel serial date: 1 = 1900-01-01
+    // Excel считает 1900 високосным годом (баг), поэтому для дат >= 60 нужно вычесть 1 день
+    // Эпоха Excel: 1899-12-30 (но 1 = 1900-01-01)
+    const excelEpoch = new Date(1899, 11, 30); // 30 декабря 1899
+    let daysToAdd = value;
+    // Если дата >= 60 (1900-02-29, который не существует), вычитаем 1 день
+    if (value >= 60) {
+      daysToAdd = value - 1;
+    }
+    const date = new Date(excelEpoch.getTime() + daysToAdd * 24 * 60 * 60 * 1000);
+    if (!isNaN(date.getTime()) && date.getFullYear() >= 1900 && date.getFullYear() < 2100) {
+      return date;
+    }
+    return undefined;
+  }
+
+  // Если значение - строка
+  const str = String(value).trim();
+  if (str === '' || str === 'undefined' || str === 'null') {
+    return undefined;
+  }
+
+  // Пытаемся парсить различные форматы
+  // Формат YYYY-MM-DD (ISO)
+  const isoMatch = str.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (isoMatch) {
+    const year = parseInt(isoMatch[1], 10);
+    const month = parseInt(isoMatch[2], 10) - 1;
+    const day = parseInt(isoMatch[3], 10);
+    const date = new Date(year, month, day);
+    if (!isNaN(date.getTime()) && date.getFullYear() === year && date.getMonth() === month && date.getDate() === day) {
+      return date;
+    }
+  }
+
+  // Формат DD.MM.YYYY
+  const ddmmyyyyMatch = str.match(/^(\d{1,2})\.(\d{1,2})\.(\d{4})/);
+  if (ddmmyyyyMatch) {
+    const day = parseInt(ddmmyyyyMatch[1], 10);
+    const month = parseInt(ddmmyyyyMatch[2], 10) - 1;
+    const year = parseInt(ddmmyyyyMatch[3], 10);
+    const date = new Date(year, month, day);
+    if (!isNaN(date.getTime()) && date.getFullYear() === year && date.getMonth() === month && date.getDate() === day) {
+      return date;
+    }
+  }
+
+  // Формат DD/MM/YYYY
+  const ddmmyyyySlashMatch = str.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+  if (ddmmyyyySlashMatch) {
+    const day = parseInt(ddmmyyyySlashMatch[1], 10);
+    const month = parseInt(ddmmyyyySlashMatch[2], 10) - 1;
+    const year = parseInt(ddmmyyyySlashMatch[3], 10);
+    const date = new Date(year, month, day);
+    if (!isNaN(date.getTime()) && date.getFullYear() === year && date.getMonth() === month && date.getDate() === day) {
+      return date;
+    }
+  }
+
+  // Пробуем стандартный парсинг Date
+  const parsedDate = new Date(str);
+  if (!isNaN(parsedDate.getTime())) {
+    // Проверяем, что дата разумная (не 1969-12-31, не 1970-01-01, и не слишком далекая)
+    const year = parsedDate.getFullYear();
+    if (year >= 1900 && year <= 2100 && parsedDate.getTime() !== new Date(1969, 11, 31).getTime() && parsedDate.getTime() !== new Date(1970, 0, 1).getTime()) {
+      return parsedDate;
+    }
+  }
+
+  return undefined;
+}
+
+/**
  * Обработка импорта
  */
 export async function processImport(
@@ -200,13 +291,7 @@ export async function processImport(
       const positionId = await getOrCreatePosition(scheduleId, row.position);
 
       // Парсим дату рождения
-      let birthDate: Date | undefined;
-      if (row.birthDate) {
-        const parsedDate = new Date(row.birthDate);
-        if (!isNaN(parsedDate.getTime())) {
-          birthDate = parsedDate;
-        }
-      }
+      const birthDate = parseBirthDate(row.birthDate);
 
       // Ищем существующего сотрудника по табельному номеру
       const existingEmployee = await prisma.employee.findFirst({

@@ -4,6 +4,7 @@
  */
 
 import prisma from '../lib/prisma.js';
+import { getXmlCalendar, convertXmlCalendarToProductionCalendar } from './xmlCalendarService.js';
 
 /**
  * Производственный календарь для года
@@ -19,28 +20,64 @@ export interface ProductionCalendar {
 
 /**
  * Получить производственный календарь для года
- * Пытается получить из БД, если нет - рассчитывает автоматически
+ * Сначала пытается получить из xmlcalendar.ru (проверяет файл, если нет - загружает)
+ * Если не удалось - пытается получить из БД, если нет - рассчитывает автоматически
  */
 export async function getProductionCalendar(year: number): Promise<ProductionCalendar> {
-  // Попытка получить из БД
-  const norm = await prisma.workHoursNorm.findUnique({
-    where: { year },
-  });
-
-  if (norm && norm.metadata) {
-    const metadata = norm.metadata as any;
-    return {
-      year,
-      workingDays: norm.workingDays || 0,
-      weekendDays: norm.weekendDays || 0,
-      holidayDays: norm.holidayDays || 0,
-      holidays: metadata.holidays || [],
-      workingWeekends: metadata.workingWeekends || [],
+  try {
+    // Пытаемся получить календарь с xmlcalendar.ru
+    const xmlCalendar = await getXmlCalendar(year);
+    const calendar = convertXmlCalendarToProductionCalendar(xmlCalendar);
+    
+    // Сохраняем в БД для быстрого доступа в будущем
+    const metadata = {
+      holidays: calendar.holidays,
+      workingWeekends: calendar.workingWeekends,
+      preholidayDays: (calendar as any).preholidayDays || [],
     };
-  }
+    
+    await prisma.workHoursNorm.upsert({
+      where: { year },
+      update: {
+        workingDays: calendar.workingDays,
+        weekendDays: calendar.weekendDays,
+        holidayDays: calendar.holidayDays,
+        metadata: metadata as any,
+      },
+      create: {
+        year,
+        totalHours: 0, // Будет рассчитано позже
+        workingDays: calendar.workingDays,
+        weekendDays: calendar.weekendDays,
+        holidayDays: calendar.holidayDays,
+        metadata: metadata as any,
+      },
+    });
+    
+    return calendar;
+  } catch (error) {
+    console.warn(`Failed to load calendar from xmlcalendar.ru for year ${year}, trying DB...`, error);
+    
+    // Попытка получить из БД
+    const norm = await prisma.workHoursNorm.findUnique({
+      where: { year },
+    });
 
-  // Если нет в БД - рассчитываем автоматически
-  return calculateProductionCalendar(year);
+    if (norm && norm.metadata) {
+      const metadata = norm.metadata as any;
+      return {
+        year,
+        workingDays: norm.workingDays || 0,
+        weekendDays: norm.weekendDays || 0,
+        holidayDays: norm.holidayDays || 0,
+        holidays: metadata.holidays || [],
+        workingWeekends: metadata.workingWeekends || [],
+      };
+    }
+
+    // Если нет в БД - рассчитываем автоматически
+    return calculateProductionCalendar(year);
+  }
 }
 
 /**
@@ -190,5 +227,65 @@ export async function getWorkingDaysInRange(
   }
 
   return workingDays;
+}
+
+/**
+ * Рассчитать норму рабочих часов для месяца
+ * @param year - год
+ * @param month - месяц (1-12)
+ * @param weeklyHours - норма часов в неделю (по умолчанию 40)
+ */
+export async function calculateMonthlyHoursNorm(
+  year: number,
+  month: number,
+  weeklyHours: number = 40
+): Promise<number> {
+  const calendar = await getProductionCalendar(year);
+  const preholidayDays = (calendar as any).preholidayDays || [];
+  
+  // Получаем все дни месяца
+  const daysInMonth = new Date(year, month, 0).getDate();
+  let workingDaysInMonth = 0;
+  let preholidayDaysInMonth = 0;
+  
+  for (let day = 1; day <= daysInMonth; day++) {
+    const date = new Date(year, month - 1, day);
+    const dateStr = date.toISOString().split('T')[0];
+    const dayOfWeek = date.getDay(); // 0 = Sunday, 6 = Saturday
+    
+    // Проверяем, является ли день праздничным
+    if (calendar.holidays.includes(dateStr)) {
+      continue; // Праздничный день - не рабочий
+    }
+    
+    // Проверяем, является ли день рабочим выходным
+    if (calendar.workingWeekends.includes(dateStr)) {
+      workingDaysInMonth++;
+      continue;
+    }
+    
+    // Проверяем, является ли день предпраздничным
+    if (preholidayDays.includes(dateStr)) {
+      workingDaysInMonth++;
+      preholidayDaysInMonth++;
+      continue;
+    }
+    
+    // Проверяем, является ли день выходным
+    if (dayOfWeek === 0 || dayOfWeek === 6) {
+      continue; // Выходной день
+    }
+    
+    // Будний день - рабочий
+    workingDaysInMonth++;
+  }
+  
+  // Норма часов в день = недельная норма / 5
+  const dailyHours = weeklyHours / 5;
+  
+  // Норма месяца = рабочие дни × норма часов в день - 1 час за каждый предпраздничный день
+  const totalHours = workingDaysInMonth * dailyHours - preholidayDaysInMonth;
+  
+  return Math.round(totalHours * 100) / 100;
 }
 

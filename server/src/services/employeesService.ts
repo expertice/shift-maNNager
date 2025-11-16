@@ -1,5 +1,6 @@
 import { prisma } from '../lib/prisma';
 import { Employee } from '@prisma/client';
+import { emitRosterUpdateEvent } from './realtimeService';
 
 export interface CreateEmployeeData {
   scheduleId: string;
@@ -51,7 +52,7 @@ export async function createEmployee(data: CreateEmployeeData): Promise<Employee
     throw new Error(`Сотрудник с табельным номером ${data.tabNumber} уже существует в этом расписании`);
   }
 
-  return prisma.employee.create({
+  const employee = await prisma.employee.create({
     data: {
       scheduleId: data.scheduleId,
       departmentId: data.departmentId,
@@ -63,6 +64,14 @@ export async function createEmployee(data: CreateEmployeeData): Promise<Employee
       loginId: null, // loginId устанавливается отдельно при необходимости
     },
   });
+
+  // Отправляем real-time событие об обновлении ростера
+  emitRosterUpdateEvent(data.scheduleId, 'employee_added', {
+    employeeId: employee.id,
+    fullName: employee.fullName,
+  });
+
+  return employee;
 }
 
 /**
@@ -128,7 +137,7 @@ export async function updateEmployee(
     }
   }
 
-  return prisma.employee.update({
+  const updatedEmployee = await prisma.employee.update({
     where: { id: employeeId },
     data: {
       ...(data.fullName && { fullName: data.fullName }),
@@ -139,6 +148,14 @@ export async function updateEmployee(
       ...(data.isHidden !== undefined && { isHidden: data.isHidden }),
     },
   });
+
+  // Отправляем real-time событие об обновлении ростера
+  emitRosterUpdateEvent(scheduleId, 'employee_updated', {
+    employeeId,
+    changes: data,
+  });
+
+  return updatedEmployee;
 }
 
 /**
@@ -162,6 +179,12 @@ export async function deleteEmployee(
 
   await prisma.employee.delete({
     where: { id: employeeId },
+  });
+
+  // Отправляем real-time событие об обновлении ростера
+  emitRosterUpdateEvent(scheduleId, 'employee_deleted', {
+    employeeId,
+    fullName: employee.fullName,
   });
 
   return true;

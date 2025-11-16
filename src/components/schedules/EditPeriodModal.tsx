@@ -22,7 +22,7 @@ export const EditPeriodModal: React.FC<EditPeriodModalProps> = ({
   const queryClient = useQueryClient();
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
-  const [useYearlyReporting, setUseYearlyReporting] = useState(false);
+  const [reportingPeriod, setReportingPeriod] = useState<'week' | 'month' | 'year'>('month');
   const [error, setError] = useState<string | null>(null);
 
   // Инициализация дат при открытии модального окна
@@ -30,8 +30,8 @@ export const EditPeriodModal: React.FC<EditPeriodModalProps> = ({
     if (isOpen && schedule) {
       setStartDate(format(new Date(schedule.startDate), 'yyyy-MM-dd'));
       setEndDate(format(new Date(schedule.endDate), 'yyyy-MM-dd'));
-      // Если reportingPeriod не установлен, по умолчанию 'month' (флажок выключен)
-      setUseYearlyReporting(schedule.reportingPeriod === 'year');
+      // Если reportingPeriod не установлен, по умолчанию 'month'
+      setReportingPeriod(schedule.reportingPeriod === 'year' ? 'year' : schedule.reportingPeriod === 'week' ? 'week' : 'month');
       setError(null);
     }
   }, [isOpen, schedule]);
@@ -40,7 +40,7 @@ export const EditPeriodModal: React.FC<EditPeriodModalProps> = ({
     mutationFn: (data: { 
       startDate: string; 
       endDate: string;
-      reportingPeriod?: 'year' | 'month';
+      reportingPeriod?: 'week' | 'month' | 'year';
     }) =>
       schedulesService.updateSchedule(schedule.id, data),
     onSuccess: () => {
@@ -75,7 +75,7 @@ export const EditPeriodModal: React.FC<EditPeriodModalProps> = ({
     updateMutation.mutate({
       startDate,
       endDate,
-      reportingPeriod: useYearlyReporting ? 'year' : 'month',
+      reportingPeriod,
     });
   };
 
@@ -113,17 +113,19 @@ export const EditPeriodModal: React.FC<EditPeriodModalProps> = ({
           </div>
         </div>
 
-        <div className="flex items-center space-x-2">
-          <input
-            type="checkbox"
-            id="yearlyReporting"
-            checked={useYearlyReporting}
-            onChange={(e) => setUseYearlyReporting(e.target.checked)}
-            className="w-4 h-4 text-primary border-gray-300 rounded focus:ring-primary"
-          />
-          <label htmlFor="yearlyReporting" className="text-sm text-gray-700">
-            Годовой отчётный период (без контроля недельных/месячных лимитов)
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-2">
+            Отчётный период
           </label>
+          <select
+            value={reportingPeriod}
+            onChange={(e) => setReportingPeriod(e.target.value as 'week' | 'month' | 'year')}
+            className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+          >
+            <option value="week">Неделя</option>
+            <option value="month">Месяц</option>
+            <option value="year">Год (без контроля недельных/месячных лимитов)</option>
+          </select>
         </div>
 
         {error && (

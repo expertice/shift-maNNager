@@ -268,3 +268,73 @@ export async function checkConcurrentVacationsLimit(
   return { valid: true };
 }
 
+/**
+ * Проверить, есть ли предупреждение о минимальной длине периода отпуска
+ * Возвращает предупреждение, если осталось меньше дней, чем минимальная длина периода,
+ * и нет периода отпуска такой длины
+ */
+export async function checkMinContinuousDaysWarning(
+  scheduleId: string,
+  employeeId: string,
+  year: number
+): Promise<{ hasWarning: boolean; message?: string }> {
+  // Получаем правила отпусков
+  const rules = await getVacationRules(scheduleId);
+  
+  if (!rules || !rules.minContinuousDays) {
+    return { hasWarning: false };
+  }
+
+  // Получаем выделенные дни
+  const allocation = await getEmployeeAllocation(scheduleId, employeeId, year);
+  
+  if (!allocation || allocation.allocatedDays === 0) {
+    return { hasWarning: false };
+  }
+
+  // Получаем использованные дни
+  const usedDays = await getUsedVacationDays(scheduleId, employeeId, year);
+  const remainingDays = allocation.allocatedDays - usedDays;
+
+  // Если осталось дней больше или равно минимальной длине - предупреждения нет
+  if (remainingDays >= rules.minContinuousDays) {
+    return { hasWarning: false };
+  }
+
+  // Если осталось меньше дней, чем минимальная длина - проверяем, есть ли период такой длины
+  const yearStart = new Date(year, 0, 1);
+  const yearEnd = new Date(year, 11, 31, 23, 59, 59);
+
+  const vacations = await prisma.vacation.findMany({
+    where: {
+      employeeId,
+      startDate: { lte: yearEnd },
+      endDate: { gte: yearStart },
+      status: { in: ['approved', 'pending'] },
+    },
+  });
+
+  // Проверяем, есть ли хотя бы один период отпуска длиной >= minContinuousDays
+  let hasLongPeriod = false;
+  for (const vacation of vacations) {
+    const start = new Date(Math.max(vacation.startDate.getTime(), yearStart.getTime()));
+    const end = new Date(Math.min(vacation.endDate.getTime(), yearEnd.getTime()));
+    const days = Math.ceil((end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24)) + 1;
+    
+    if (days >= rules.minContinuousDays) {
+      hasLongPeriod = true;
+      break;
+    }
+  }
+
+  // Если нет периода нужной длины - возвращаем предупреждение
+  if (!hasLongPeriod) {
+    return {
+      hasWarning: true,
+      message: `Осталось ${remainingDays} дней отпуска, что меньше минимальной длины периода (${rules.minContinuousDays} дней). У вас нет периода отпуска длиной ${rules.minContinuousDays} дней или более. Рекомендуется пересмотреть распределение отпусков.`,
+    };
+  }
+
+  return { hasWarning: false };
+}
+

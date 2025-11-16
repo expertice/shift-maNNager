@@ -34,7 +34,7 @@ export const vacationsService = {
   /**
    * Создать отпуск
    */
-  createVacation: async (scheduleId: string, data: CreateVacationRequest): Promise<Vacation> => {
+  createVacation: async (scheduleId: string, data: CreateVacationRequest): Promise<{ vacation: Vacation; warning?: string }> => {
     const response = await apiClient.post<ApiResponse<Vacation>>(
       `/schedules/${scheduleId}/vacations`,
       data
@@ -42,7 +42,10 @@ export const vacationsService = {
     if (!response.data.success || !response.data.data) {
       throw new Error(response.data.error || 'Ошибка создания отпуска');
     }
-    return response.data.data;
+    return {
+      vacation: response.data.data,
+      warning: response.data.warning,
+    };
   },
 
   /**

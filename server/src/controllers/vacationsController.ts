@@ -26,7 +26,9 @@ export async function getVacations(
       success: true,
       data: vacations,
     });
-  } catch (error) {
+  } catch (error: any) {
+    console.error('Error in getVacations:', error);
+    console.error('Error stack:', error?.stack);
     next(error);
   }
 }
@@ -44,6 +46,8 @@ export async function createVacation(
     const { scheduleId: _scheduleId } = req.params; // Используется в authorize middleware
     const { employeeId, startDate, endDate, status } = req.body;
 
+    console.log('createVacation request:', { employeeId, startDate, endDate, status });
+
     if (!employeeId || !startDate || !endDate) {
       const error: ApiError = {
         status: 400,
@@ -53,19 +57,45 @@ export async function createVacation(
       return next(error);
     }
 
+    // Преобразуем даты в объекты Date, обрезая время до начала дня в локальном времени
+    // Используем parseISO или создаем дату напрямую из строки формата YYYY-MM-DD
+    const startParts = startDate.split('-');
+    const endParts = endDate.split('-');
+    const start = new Date(Date.UTC(
+      parseInt(startParts[0], 10),
+      parseInt(startParts[1], 10) - 1,
+      parseInt(startParts[2], 10)
+    ));
+    const end = new Date(Date.UTC(
+      parseInt(endParts[0], 10),
+      parseInt(endParts[1], 10) - 1,
+      parseInt(endParts[2], 10)
+    ));
+
+    console.log('Parsed dates:', { start, end, startISO: start.toISOString(), endISO: end.toISOString() });
+
     const vacation = await vacationsService.createVacation({
       employeeId,
-      startDate: new Date(startDate),
-      endDate: new Date(endDate),
+      startDate: start,
+      endDate: end,
       status: status || 'approved',
       createdBy: req.user?.id || 'system',
     });
 
+    // Извлекаем предупреждение, если оно есть
+    const warning = (vacation as any).warning;
+    const vacationData = { ...vacation };
+    delete (vacationData as any).warning;
+
     res.status(201).json({
       success: true,
-      data: vacation,
+      data: vacationData,
+      ...(warning && { warning }),
     });
-  } catch (error) {
+  } catch (error: any) {
+    console.error('Error in createVacation:', error);
+    console.error('Error stack:', error?.stack);
+    console.error('Error message:', error?.message);
     next(error);
   }
 }
@@ -84,10 +114,20 @@ export async function updateVacation(
     const updateData = req.body;
 
     if (updateData.startDate) {
-      updateData.startDate = new Date(updateData.startDate);
+      const startParts = updateData.startDate.toString().split('-');
+      updateData.startDate = new Date(Date.UTC(
+        parseInt(startParts[0], 10),
+        parseInt(startParts[1], 10) - 1,
+        parseInt(startParts[2], 10)
+      ));
     }
     if (updateData.endDate) {
-      updateData.endDate = new Date(updateData.endDate);
+      const endParts = updateData.endDate.toString().split('-');
+      updateData.endDate = new Date(Date.UTC(
+        parseInt(endParts[0], 10),
+        parseInt(endParts[1], 10) - 1,
+        parseInt(endParts[2], 10)
+      ));
     }
 
     const vacation = await vacationsService.updateVacation(id, scheduleId, updateData);
@@ -101,9 +141,15 @@ export async function updateVacation(
       return next(error);
     }
 
+    // Извлекаем предупреждение, если оно есть
+    const warning = (vacation as any).warning;
+    const vacationData = { ...vacation };
+    delete (vacationData as any).warning;
+
     res.json({
       success: true,
-      data: vacation,
+      data: vacationData,
+      ...(warning && { warning }),
     });
   } catch (error) {
     next(error);

@@ -174,3 +174,17 @@ export async function getViolationStats(scheduleId: string): Promise<ViolationSt
   return response.data.data;
 }
 
+/**
+ * Получить месячные нормы часов для года
+ */
+export async function getMonthlyHoursNorms(
+  year: number,
+  weeklyHours: number = 40
+): Promise<{ month: number; hours: number }[]> {
+  const response = await apiClient.get<{
+    success: boolean;
+    data: { month: number; hours: number }[];
+  }>(`${BASE_URL}/work-hours-norms/${year}/monthly?weeklyHours=${weeklyHours}`);
+  return response.data.data;
+}
+

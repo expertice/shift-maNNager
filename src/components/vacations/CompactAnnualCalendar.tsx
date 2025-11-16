@@ -1,12 +1,16 @@
 import React, { useMemo } from 'react';
 import { format, eachDayOfInterval, startOfMonth, endOfMonth, isSameDay, isWithinInterval, getDay, startOfDay } from 'date-fns';
+import { parseLocalDate } from '@/utils/dateUtils';
 import { ru } from 'date-fns/locale';
 import classNames from 'classnames';
 import { SlotView } from '@components/shifts/PatternConstructor';
 import { Vacation, Employee, Shift } from '@types';
 import { splitPeriodIntoMonths, isBirthday } from '@/utils/vacationCalendarUtils';
+import { useQuery } from '@tanstack/react-query';
+import { vacationRulesService } from '@services/api/vacationRulesService';
 
 export interface CompactAnnualCalendarProps {
+  scheduleId: string;
   scheduleStart: Date;
   scheduleEnd: Date;
   selectedEmployeeId: string | null;
@@ -30,6 +34,7 @@ const MONTH_NAMES = [
 ];
 
 export default function CompactAnnualCalendar({
+  scheduleId,
   scheduleStart,
   scheduleEnd,
   selectedEmployeeId,
@@ -45,6 +50,13 @@ export default function CompactAnnualCalendar({
   const selectedEmployee = useMemo(() => {
     return selectedEmployeeId ? employees.find(e => e.id === selectedEmployeeId) : null;
   }, [selectedEmployeeId, employees]);
+
+  // Загружаем правила отпусков для получения maxConcurrentEmployees
+  const { data: vacationRules } = useQuery({
+    queryKey: ['vacationRules', scheduleId],
+    queryFn: () => vacationRulesService.getVacationRules(scheduleId),
+    enabled: !!scheduleId,
+  });
 
   // Получаем месяцы для отображения (только активный период)
   const months = useMemo(() => {
@@ -70,8 +82,8 @@ export default function CompactAnnualCalendar({
   const isDateInVacation = (date: Date): boolean => {
     const checkDate = startOfDay(date);
     return employeeVacations.some(vacation => {
-      const start = startOfDay(new Date(vacation.startDate));
-      const end = startOfDay(new Date(vacation.endDate));
+      const start = parseLocalDate(vacation.startDate);
+      const end = parseLocalDate(vacation.endDate);
       return checkDate >= start && checkDate <= end;
     });
   };
@@ -79,8 +91,8 @@ export default function CompactAnnualCalendar({
   // Проверяем, является ли дата началом или концом отпуска
   const getVacationMarker = (date: Date): 'start' | 'end' | 'middle' | null => {
     for (const vacation of employeeVacations) {
-      const start = new Date(vacation.startDate);
-      const end = new Date(vacation.endDate);
+      const start = parseLocalDate(vacation.startDate);
+      const end = parseLocalDate(vacation.endDate);
       
       if (isSameDay(date, start)) return 'start';
       if (isSameDay(date, end)) return 'end';
@@ -109,6 +121,35 @@ export default function CompactAnnualCalendar({
   // Проверяем, можно ли редактировать дату (в пределах периода расписания)
   const isDateEditable = (date: Date): boolean => {
     return date >= scheduleStart && date <= scheduleEnd;
+  };
+
+  // Вычисляем количество сотрудников в отпуске на дату
+  const getVacationCountOnDate = (date: Date): number => {
+    const checkDate = startOfDay(date);
+    const employeesOnVacation = new Set<string>();
+    
+    vacations.forEach(vacation => {
+      if (vacation.status !== 'approved' && vacation.status !== 'pending') return;
+      
+      const start = parseLocalDate(vacation.startDate);
+      const end = parseLocalDate(vacation.endDate);
+      
+      if (checkDate >= start && checkDate <= end) {
+        employeesOnVacation.add(vacation.employeeId);
+      }
+    });
+    
+    return employeesOnVacation.size;
+  };
+
+  // Проверяем, заблокирована ли дата (достигнут лимит одновременных отпусков)
+  const isDateBlocked = (date: Date): boolean => {
+    if (!vacationRules?.maxConcurrentEmployees || vacationRules.maxConcurrentEmployees <= 0) {
+      return false;
+    }
+    
+    const count = getVacationCountOnDate(date);
+    return count >= vacationRules.maxConcurrentEmployees;
   };
 
   return (
@@ -169,24 +210,29 @@ export default function CompactAnnualCalendar({
                       const isClicked = clickedDate && 
                         clickedDate.employeeId === selectedEmployeeId && 
                         isSameDay(date, clickedDate.date);
+                      const isBlocked = !inVacation && isDateBlocked(date);
 
                       return (
                         <div
                           key={day}
                           className={classNames(
-                            'relative cursor-pointer transition-all',
+                            'relative transition-all',
                             {
-                              'opacity-50': !isEditable,
-                              'ring-2 ring-blue-500 ring-offset-2': isClicked && isEditable,
+                              'opacity-50': !isEditable || isBlocked,
+                              'cursor-pointer': isEditable && !isBlocked,
+                              'cursor-not-allowed': isBlocked,
+                              'ring-2 ring-blue-500 ring-offset-2': isClicked && isEditable && !isBlocked,
                             }
                           )}
                           onClick={() => {
-                            if (isEditable) {
+                            if (isEditable && !isBlocked) {
                               onDateClick(date);
                             }
                           }}
                           title={
-                            isEditable
+                            isBlocked
+                              ? 'Недоступно: достигнут лимит одновременных отпусков'
+                              : isEditable
                               ? format(date, 'dd.MM.yyyy', { locale: ru })
                               : 'Вне периода расписания'
                           }
@@ -198,16 +244,20 @@ export default function CompactAnnualCalendar({
                                 ? '#FCD34D' // желтый для отпуска
                                 : inSelection
                                 ? '#93C5FD' // синий для выбора
+                                : isBlocked
+                                ? '#E5E7EB' // серый для заблокированных
                                 : shiftType?.color
                                 ? shiftType.color
                                 : undefined
                             }
-                            isEmpty={!shiftType && !inVacation && !inSelection}
+                            isEmpty={!shiftType && !inVacation && !inSelection && !isBlocked}
                             isDragging={false}
                             className={classNames({
                               'border-yellow-400 bg-yellow-100': inVacation,
                               'border-blue-400 bg-blue-100': inSelection && !inVacation,
-                              'opacity-30': shiftType && !inVacation && !inSelection, // бледный цвет для смен
+                              'border-gray-300 bg-gray-200': isBlocked,
+                              'opacity-30': shiftType && !inVacation && !inSelection && !isBlocked, // бледный цвет для смен
+                              'opacity-50': isBlocked,
                             })}
                             textClassName={classNames({
                               'text-gray-400': !isEditable,

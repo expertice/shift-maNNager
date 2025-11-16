@@ -3,6 +3,8 @@ import { DailyShift, ShiftStatus } from '@prisma/client';
 import { startOfDay, endOfDay, addDays } from 'date-fns';
 import { validateSchedule } from './laborLawComplianceService.js';
 import { normalizeUtcStart, nextDayUtcStart } from '../utils/patternCycle';
+import { logger } from '../utils/logger';
+import * as rosterSnapshotService from './rosterSnapshotService';
 
 export interface CreateShiftData {
   scheduleId: string;
@@ -85,7 +87,7 @@ export async function getShiftsBySchedule(
 export async function createShift(data: CreateShiftData): Promise<DailyShift> {
   // Если shiftTypeId null, создаем смену со статусом 'cancelled' (выходной)
   // Если shiftTypeId не null, создаем обычную смену со статусом 'scheduled'
-  return prisma.dailyShift.create({
+  const shift = await prisma.dailyShift.create({
     data: {
       scheduleId: data.scheduleId,
       employeeId: data.employeeId,
@@ -98,6 +100,18 @@ export async function createShift(data: CreateShiftData): Promise<DailyShift> {
       shiftType: true,
     },
   });
+
+  // ВАЖНО: Обновляем снимок ростера асинхронно (не блокируем операцию)
+  // Это обеспечивает синхронизацию с VacationMode - ростер отпусков ОДИН-В-ОДИН как ростер смен
+  rosterSnapshotService.syncRosterSnapshot(data.scheduleId).catch((error) => {
+    logger.error('[createShift] Error updating roster snapshot (async)', {
+      scheduleId: data.scheduleId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    // Не прерываем выполнение, если обновление снимка не удалось
+  });
+
+  return shift;
 }
 
 /**
@@ -111,7 +125,15 @@ export async function upsertShift(data: CreateShiftData & { status?: ShiftStatus
   const day = normalizedDate.getDate();
   const dateUTC = new Date(Date.UTC(year, month, day, 0, 0, 0, 0));
 
-  return prisma.dailyShift.upsert({
+  logger.info('[upsertShift] Creating/updating shift in DB', {
+    scheduleId: data.scheduleId,
+    employeeId: data.employeeId,
+    date: dateUTC.toISOString(),
+    shiftTypeId: data.shiftTypeId,
+    status: data.status,
+  });
+
+  const shift = await prisma.dailyShift.upsert({
     where: {
       scheduleId_employeeId_date: {
         scheduleId: data.scheduleId,
@@ -135,6 +157,26 @@ export async function upsertShift(data: CreateShiftData & { status?: ShiftStatus
       shiftType: true,
     },
   });
+
+  logger.info('[upsertShift] Shift created/updated successfully', {
+    shiftId: shift.id,
+    scheduleId: shift.scheduleId,
+    employeeId: shift.employeeId,
+    date: shift.date.toISOString(),
+    shiftTypeId: shift.shiftTypeId,
+  });
+
+  // ВАЖНО: Обновляем снимок ростера асинхронно (не блокируем операцию)
+  // Это обеспечивает синхронизацию с VacationMode - ростер отпусков ОДИН-В-ОДИН как ростер смен
+  rosterSnapshotService.syncRosterSnapshot(data.scheduleId).catch((error) => {
+    logger.error('[upsertShift] Error updating roster snapshot (async)', {
+      scheduleId: data.scheduleId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    // Не прерываем выполнение, если обновление снимка не удалось
+  });
+
+  return shift;
 }
 
 /**
@@ -157,7 +199,7 @@ export async function updateShift(
     return null;
   }
 
-  return prisma.dailyShift.update({
+  const updatedShift = await prisma.dailyShift.update({
     where: { id: shiftId },
     data: {
       ...(data.shiftTypeId !== undefined && { shiftTypeId: data.shiftTypeId }),
@@ -169,6 +211,18 @@ export async function updateShift(
       shiftType: true,
     },
   });
+
+  // ВАЖНО: Обновляем снимок ростера асинхронно (не блокируем операцию)
+  // Это обеспечивает синхронизацию с VacationMode - ростер отпусков ОДИН-В-ОДИН как ростер смен
+  rosterSnapshotService.syncRosterSnapshot(scheduleId).catch((error) => {
+    logger.error('[updateShift] Error updating roster snapshot (async)', {
+      scheduleId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    // Не прерываем выполнение, если обновление снимка не удалось
+  });
+
+  return updatedShift;
 }
 
 /**
@@ -199,28 +253,79 @@ export async function bulkCreateShifts(
     };
   });
 
+  logger.info('[bulkCreateShifts] START', {
+    scheduleId,
+    shiftsCount: shifts.length,
+    sampleShifts: shifts.slice(0, 3).map(s => ({
+      employeeId: s.employeeId,
+      date: s.date.toISOString(),
+      shiftTypeId: s.shiftTypeId,
+    })),
+  });
+
   // Prisma createMany не поддерживает skipDuplicates для всех БД,
   // поэтому делаем через транзакцию
-  const result = await prisma.$transaction(
-    data.map((shift) =>
-      prisma.dailyShift.upsert({
-        where: {
-          scheduleId_employeeId_date: {
-            scheduleId: shift.scheduleId,
-            employeeId: shift.employeeId,
-            date: shift.date,
-          },
-        },
-        update: shift,
-        create: shift,
-      })
-    )
-  );
-
-  // Диагностика: логируем количество upsert'ов
+  let result: DailyShift[];
   try {
-    console.info('[bulkCreateShifts] upserted', { scheduleId, count: result.length });
-  } catch {}
+    result = await prisma.$transaction(
+      data.map((shift) =>
+        prisma.dailyShift.upsert({
+          where: {
+            scheduleId_employeeId_date: {
+              scheduleId: shift.scheduleId,
+              employeeId: shift.employeeId,
+              date: shift.date,
+            },
+          },
+          update: shift,
+          create: shift,
+        })
+      ),
+      {
+        timeout: 30000, // 30 секунд таймаут для больших транзакций
+      }
+    );
+  } catch (error) {
+    logger.error('[bulkCreateShifts] ERROR - Transaction failed', {
+      scheduleId,
+      shiftsCount: shifts.length,
+      error: error instanceof Error ? error.message : String(error),
+      stack: error instanceof Error ? error.stack : undefined,
+    });
+    throw error;
+  }
+
+  logger.info('[bulkCreateShifts] SUCCESS - Shifts saved to DB', {
+    scheduleId,
+    requestedCount: shifts.length,
+    savedCount: result.length,
+    sampleSavedShifts: result.slice(0, 3).map(s => ({
+      id: s.id,
+      employeeId: s.employeeId,
+      date: s.date.toISOString(),
+      shiftTypeId: s.shiftTypeId,
+    })),
+  });
+
+  // ВАЖНО: Проверяем, что смены действительно сохранены в БД
+  const verificationCount = await prisma.dailyShift.count({
+    where: {
+      scheduleId,
+      date: {
+        gte: data[0]?.date || new Date(0),
+        lte: data[data.length - 1]?.date || new Date(),
+      },
+    },
+  });
+
+  logger.info('[bulkCreateShifts] Verification - Shifts count in DB', {
+    scheduleId,
+    savedInTransaction: result.length,
+    verifiedInDB: verificationCount,
+    note: verificationCount !== result.length 
+      ? 'WARNING: Count mismatch - some shifts might not be saved correctly'
+      : 'OK: All shifts saved correctly',
+  });
 
   // Запускаем проверку ТК РФ для расписаний в статусе draft
   prisma.schedule
@@ -238,6 +343,27 @@ export async function bulkCreateShifts(
     .catch((error) => {
       console.error('Error checking schedule status:', error);
     });
+
+  // ВАЖНО: Обновляем снимок ростера СИНХРОННО после массового создания смен
+  // Это обеспечивает синхронизацию с VacationMode - ростер отпусков ОДИН-В-ОДИН как ростер смен
+  // Делаем это синхронно, чтобы гарантировать, что транзакция уже закоммичена и смены доступны
+  try {
+    logger.info('[bulkCreateShifts] Updating roster snapshot synchronously', {
+      scheduleId,
+      shiftsCount: result.length,
+    });
+    await rosterSnapshotService.syncRosterSnapshot(scheduleId);
+    logger.info('[bulkCreateShifts] Roster snapshot updated successfully', {
+      scheduleId,
+    });
+  } catch (error) {
+    logger.error('[bulkCreateShifts] Error updating roster snapshot', {
+      scheduleId,
+      shiftsCount: result.length,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    // Не прерываем выполнение, если обновление снимка не удалось
+  }
 
   return result.length;
 }
@@ -318,6 +444,16 @@ export async function deleteShift(shiftId: string, scheduleId: string): Promise<
 
   await prisma.dailyShift.delete({
     where: { id: shiftId },
+  });
+
+  // ВАЖНО: Обновляем снимок ростера асинхронно (не блокируем операцию)
+  // Это обеспечивает синхронизацию с VacationMode - ростер отпусков ОДИН-В-ОДИН как ростер смен
+  rosterSnapshotService.syncRosterSnapshot(scheduleId).catch((error) => {
+    logger.error('[deleteShift] Error updating roster snapshot (async)', {
+      scheduleId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    // Не прерываем выполнение, если обновление снимка не удалось
   });
 
   return true;

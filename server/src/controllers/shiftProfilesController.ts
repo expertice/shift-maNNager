@@ -5,6 +5,7 @@ import { ShiftProfile } from '@prisma/client';
 import { parseISO } from 'date-fns';
 import * as importExportService from '../services/importExportService';
 import multer from 'multer';
+import { logger } from '../utils/logger';
 
 /**
  * GET /api/v1/shift-profiles?scheduleId=xxx
@@ -236,17 +237,13 @@ export async function generateShifts(
       return next(error);
     }
 
-    // Диагностика: логируем входные параметры
-    try {
-      // eslint-disable-next-line no-console
-      console.info('[controller][generateShifts] request', {
-        scheduleId,
-        shiftProfileId,
-        employees: Array.isArray(employeeIds) ? employeeIds.length : 0,
-        startDate,
-        endDate,
-      });
-    } catch {}
+    logger.info('[generateShifts] Controller - START', {
+      scheduleId,
+      shiftProfileId,
+      employeesCount: Array.isArray(employeeIds) ? employeeIds.length : 0,
+      startDate,
+      endDate,
+    });
 
     const result = await shiftProfilesService.generateShiftsFromProfile({
       scheduleId,
@@ -256,11 +253,22 @@ export async function generateShifts(
       endDate: parseISO(endDate),
     });
 
+    logger.info('[generateShifts] Controller - SUCCESS', {
+      scheduleId,
+      shiftProfileId,
+      shiftsGenerated: result.count,
+    });
+
     res.status(201).json({
       success: true,
       data: result,
     });
   } catch (error) {
+    logger.error('[generateShifts] Controller - ERROR', {
+      scheduleId: req.params.scheduleId,
+      error: error instanceof Error ? error.message : String(error),
+      stack: error instanceof Error ? error.stack : undefined,
+    });
     next(error);
   }
 }
@@ -418,12 +426,21 @@ export async function updatePatternOffsetHandler(
   try {
     const { scheduleId, offsetDelta } = req.body;
 
+    // Логирование входящего запроса
+    console.log('[updatePatternOffsetHandler] REQUEST', {
+      scheduleId,
+      offsetDelta,
+      userId: req.user?.id,
+      timestamp: new Date().toISOString(),
+    });
+
     if (!scheduleId || typeof scheduleId !== 'string') {
       const error: ApiError = {
         status: 400,
         code: 'VALIDATION_ERROR',
         message: 'scheduleId is required',
       };
+      console.error('[updatePatternOffsetHandler] VALIDATION ERROR', error);
       return next(error);
     }
 
@@ -433,16 +450,35 @@ export async function updatePatternOffsetHandler(
         code: 'VALIDATION_ERROR',
         message: 'offsetDelta is required and must be a number',
       };
+      console.error('[updatePatternOffsetHandler] VALIDATION ERROR', error);
       return next(error);
     }
 
+    console.log('[updatePatternOffsetHandler] Calling updatePatternOffset service', {
+      scheduleId,
+      offsetDelta,
+    });
+
     await shiftProfilesService.updatePatternOffset(scheduleId, offsetDelta);
+
+    console.log('[updatePatternOffsetHandler] SUCCESS', {
+      scheduleId,
+      offsetDelta,
+      timestamp: new Date().toISOString(),
+    });
 
     res.json({
       success: true,
       data: { message: 'Pattern offset updated successfully' },
     });
   } catch (error) {
+    console.error('[updatePatternOffsetHandler] ERROR', {
+      scheduleId: req.body.scheduleId,
+      offsetDelta: req.body.offsetDelta,
+      error: error instanceof Error ? error.message : String(error),
+      stack: error instanceof Error ? error.stack : undefined,
+      timestamp: new Date().toISOString(),
+    });
     next(error);
   }
 }

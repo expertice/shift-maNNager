@@ -7,7 +7,8 @@ import prisma from '../lib/prisma.js';
 import { LaborViolationType, ViolationSeverity } from '@prisma/client';
 import { 
   calculateWorkingHours,
-  calculateProductionCalendar 
+  calculateProductionCalendar,
+  calculateMonthlyHoursNorm
 } from './productionCalendarService.js';
 import { 
   startOfWeek,
@@ -20,9 +21,6 @@ import {
   endOfQuarter,
   startOfDay,
   differenceInHours,
-  differenceInMinutes,
-  differenceInDays,
-  eachDayOfInterval,
   isSameDay,
   addDays,
   parseISO
@@ -55,6 +53,7 @@ export interface LaborLawSettings {
   enabledRules: string[];
   workHoursSource: string;
   customApiUrl: string | null;
+  selectedYear: number | null;
   lastSyncAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
@@ -144,7 +143,7 @@ export async function getWorkHoursNorm(year: number): Promise<number> {
       totalHours: calculated,
       isManualOverride: false,
       source: 'production_calendar',
-      metadata: await calculateProductionCalendar(year),
+      metadata: await calculateProductionCalendar(year) as any,
     },
   });
 
@@ -253,28 +252,32 @@ export async function validateSchedule(scheduleId: string): Promise<{
       violations.push(...consecutiveViolations);
     }
 
-    // 4. Проверка недельных часов (пропускаем при годовом периоде)
-    if (settings.enabledRules.includes('excessive_weekly_hours') && schedule.reportingPeriod !== 'year') {
-      const weeklyViolations = await checkWeeklyHours(
-        employeeShifts,
-        settings,
-        scheduleId,
-        employee.id,
-        schedule
-      );
-      violations.push(...weeklyViolations);
+    // 4. Проверка недельных часов
+    if (settings.enabledRules.includes('excessive_weekly_hours')) {
+      if (schedule.reportingPeriod === 'week' || schedule.reportingPeriod === 'month') {
+        const weeklyViolations = await checkWeeklyHours(
+          employeeShifts,
+          settings,
+          scheduleId,
+          employee.id,
+          schedule
+        );
+        violations.push(...weeklyViolations);
+      }
     }
 
-    // 5. Проверка месячных часов (пропускаем при годовом периоде)
-    if (settings.enabledRules.includes('excessive_monthly_hours') && schedule.reportingPeriod !== 'year') {
-      const monthlyViolations = await checkMonthlyHours(
-        employeeShifts,
-        settings,
-        scheduleId,
-        employee.id,
-        schedule
-      );
-      violations.push(...monthlyViolations);
+    // 5. Проверка месячных часов
+    if (settings.enabledRules.includes('excessive_monthly_hours')) {
+      if (schedule.reportingPeriod === 'month') {
+        const monthlyViolations = await checkMonthlyHours(
+          employeeShifts,
+          settings,
+          scheduleId,
+          employee.id,
+          schedule
+        );
+        violations.push(...monthlyViolations);
+      }
     }
 
     // 6. Проверка квартальных часов (пропускаем при годовом периоде)
@@ -608,7 +611,6 @@ async function checkMonthlyHours(
   schedule: any
 ): Promise<any[]> {
   const violations: any[] = [];
-  const maxHoursPerMonth = Number(settings.maxHoursPerMonth);
   const allowOvertime = schedule.allowOvertimeMonthly || false;
 
   if (allowOvertime) {
@@ -637,8 +639,16 @@ async function checkMonthlyHours(
       0
     );
 
-    if (totalHours > maxHoursPerMonth) {
-      const monthStart = parseISO(monthKey);
+    const monthStart = parseISO(monthKey);
+    const year = monthStart.getFullYear();
+    const month = monthStart.getMonth() + 1; // getMonth() возвращает 0-11
+    
+    // Рассчитываем норму часов для этого месяца на основе производственного календаря
+    // Используем selectedYear из настроек, если есть, иначе год из месяца
+    const selectedYear = (settings as any).selectedYear || year;
+    const monthlyNorm = await calculateMonthlyHoursNorm(selectedYear, month, Number(settings.maxHoursPerWeek));
+
+    if (totalHours > monthlyNorm) {
       const monthEnd = endOfMonth(monthStart);
 
       violations.push({
@@ -650,9 +660,9 @@ async function checkMonthlyHours(
         dateTo: monthEnd,
         dailyShiftId: null,
         actualValue: totalHours,
-        expectedValue: maxHoursPerMonth,
+        expectedValue: monthlyNorm,
         articleTkRf: 'Ст. 91 ТК РФ',
-        description: `Отработано ${totalHours} ч. в месяц при норме ${maxHoursPerMonth} ч.`,
+        description: `Отработано ${totalHours} ч. в месяц при норме ${monthlyNorm} ч. (рассчитано для ${selectedYear} года)`,
       });
     }
   }
@@ -731,7 +741,7 @@ async function checkYearlyHours(
   settings: LaborLawSettings,
   scheduleId: string,
   employeeId: string,
-  schedule: any
+  _schedule: any // Не используется, но нужен для единообразия интерфейса
 ): Promise<any[]> {
   const violations: any[] = [];
 

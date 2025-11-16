@@ -15,41 +15,111 @@ Write-Host ""
 function Stop-ByPort {
 	param(
 		[int]$Port,
-		[string]$Label
+		[string]$Label,
+		[string]$ProjectPath = $ProjectRoot,
+		[string[]]$ProcessNames = @('node', 'tsx', 'vite')
 	)
 	$stopped = $false
 	$pids = @()
 	
-	# Method 1: Get-NetTCPConnection (primary method)
+	# Method 1: First, find processes by project path and process name (most reliable)
 	try {
-		$connections = Get-NetTCPConnection -LocalPort $Port -State Listen,Established -ErrorAction SilentlyContinue
-		if ($connections) {
-			$pids += $connections | Select-Object -ExpandProperty OwningProcess -Unique
+		foreach ($procName in $ProcessNames) {
+			$procs = Get-Process -Name $procName -ErrorAction SilentlyContinue
+			foreach ($proc in $procs) {
+				try {
+					$procInfo = Get-CimInstance Win32_Process -Filter "ProcessId = $($proc.Id)" -ErrorAction SilentlyContinue
+					if ($procInfo -and $procInfo.CommandLine) {
+						$cmdLine = $procInfo.CommandLine
+						if ($cmdLine -and (
+							$cmdLine -like "*$ProjectPath*" -or
+							$cmdLine -like "*shift-manager*"
+						)) {
+							# Check if this process is using our port
+							$connections = Get-NetTCPConnection -OwningProcess $proc.Id -ErrorAction SilentlyContinue
+							if ($connections | Where-Object { $_.LocalPort -eq $Port }) {
+								$pids += $proc.Id
+							}
+						}
+					}
+				} catch {}
+			}
 		}
 	} catch {}
 	
-	# Method 2: netstat as fallback (more reliable on some systems)
+	# Method 2: Get-NetTCPConnection (if Method 1 didn't find anything)
+	if ($pids.Count -eq 0) {
+		try {
+			$connections = Get-NetTCPConnection -LocalPort $Port -State Listen,Established -ErrorAction SilentlyContinue
+			if ($connections) {
+				$portPids = $connections | Select-Object -ExpandProperty OwningProcess -Unique
+				foreach ($processId in $portPids) {
+					try {
+						$proc = Get-Process -Id $processId -ErrorAction SilentlyContinue
+						if ($proc -and $proc.ProcessName -in $ProcessNames) {
+							# Verify it's from our project
+							$procInfo = Get-CimInstance Win32_Process -Filter "ProcessId = $processId" -ErrorAction SilentlyContinue
+							if ($procInfo -and $procInfo.CommandLine) {
+								$cmdLine = $procInfo.CommandLine
+								if ($cmdLine -like "*$ProjectPath*" -or $cmdLine -like "*shift-manager*") {
+									$pids += $processId
+								}
+							}
+						}
+					} catch {}
+				}
+			}
+		} catch {}
+	}
+	
+	# Method 3: netstat as fallback
 	if ($pids.Count -eq 0) {
 		try {
 			$netstatOutput = netstat -ano | Select-String ":$Port\s+.*LISTENING"
 			foreach ($line in $netstatOutput) {
-				$matches = [regex]::Matches($line, '\s+(\d+)\s*$')
-				if ($matches.Count -gt 0) {
-					$pid = [int]$matches[0].Groups[1].Value
-					if ($pid -gt 0) {
-						$pids += $pid
+				$lineMatches = [regex]::Matches($line, '\s+(\d+)\s*$')
+				if ($lineMatches.Count -gt 0) {
+					$processId = [int]$lineMatches[0].Groups[1].Value
+					if ($processId -gt 0) {
+						try {
+							$proc = Get-Process -Id $processId -ErrorAction SilentlyContinue
+							if ($proc -and $proc.ProcessName -in $ProcessNames) {
+								$procInfo = Get-CimInstance Win32_Process -Filter "ProcessId = $processId" -ErrorAction SilentlyContinue
+								if ($procInfo -and $procInfo.CommandLine) {
+									$cmdLine = $procInfo.CommandLine
+									if ($cmdLine -like "*$ProjectPath*" -or $cmdLine -like "*shift-manager*") {
+										$pids += $processId
+									}
+								}
+							}
+						} catch {}
 					}
 				}
 			}
 		} catch {}
 	}
 	
-	# Method 3: Also check for TIME_WAIT and other states
+	# Method 4: Also check for TIME_WAIT and other states
 	try {
 		$allConnections = Get-NetTCPConnection -LocalPort $Port -ErrorAction SilentlyContinue
 		if ($allConnections) {
 			$allPids = $allConnections | Select-Object -ExpandProperty OwningProcess -Unique
-			$pids += $allPids
+			foreach ($processId in $allPids) {
+				if ($processId -gt 0 -and $processId -notin $pids) {
+					try {
+						$proc = Get-Process -Id $processId -ErrorAction SilentlyContinue
+						if ($proc -and $proc.ProcessName -in $ProcessNames) {
+							$procInfo = Get-CimInstance Win32_Process -Filter "ProcessId = $processId" -ErrorAction SilentlyContinue
+							if ($procInfo -and $procInfo.CommandLine) {
+								$cmdLine = $procInfo.CommandLine
+								if ($cmdLine -like "*$ProjectPath*" -or $cmdLine -like "*shift-manager*") {
+									$pids += $processId
+								}
+							}
+						}
+					} catch {}
+				}
+			}
 		}
 	} catch {}
 	
@@ -187,7 +257,7 @@ function Stop-PowerShellWindowsByProject {
 # Step 1: Stop frontend
 Write-Host "[1/4] Stopping frontend server..." -ForegroundColor Yellow
 
-$frontendStopped = Stop-ByPort -Port 5173 -Label "frontend"
+$frontendStopped = Stop-ByPort -Port 5173 -Label "frontend" -ProjectPath $ProjectRoot -ProcessNames @('node', 'vite')
 if ($frontendStopped) {
 	Write-Host "  [+] Frontend server stopped" -ForegroundColor Green
 } else {
@@ -202,7 +272,7 @@ Write-Host ""
 # Step 2: Stop backend
 Write-Host "[2/4] Stopping backend server..." -ForegroundColor Yellow
 
-$backendStopped = Stop-ByPort -Port 3000 -Label "backend"
+$backendStopped = Stop-ByPort -Port 3000 -Label "backend" -ProjectPath $ProjectRoot -ProcessNames @('node', 'tsx')
 if ($backendStopped) {
 	Write-Host "  [+] Backend server stopped" -ForegroundColor Green
 } else {
@@ -339,13 +409,13 @@ foreach ($port in @(3000, 5173)) {
 	$connections = Get-NetTCPConnection -LocalPort $port -State Listen,Established -ErrorAction SilentlyContinue
 	if ($connections) {
 		$pids = $connections | Select-Object -ExpandProperty OwningProcess -Unique
-		foreach ($pid in $pids) {
+		foreach ($processId in $pids) {
 			try {
-				$proc = Get-Process -Id $pid -ErrorAction SilentlyContinue
+				$proc = Get-Process -Id $processId -ErrorAction SilentlyContinue
 				if ($proc) {
-					Write-Host "  [!] Port $port still in use by process $($proc.ProcessName) (PID: $pid)" -ForegroundColor Red
+					Write-Host "  [!] Port $port still in use by process $($proc.ProcessName) (PID: $processId)" -ForegroundColor Red
 					Write-Host "      -> Attempting final kill..." -ForegroundColor Yellow
-					Stop-Process -Id $pid -Force -ErrorAction SilentlyContinue
+					Stop-Process -Id $processId -Force -ErrorAction SilentlyContinue
 					Start-Sleep -Milliseconds 500
 					$portsStillInUse += $port
 				}
@@ -358,15 +428,15 @@ foreach ($port in @(3000, 5173)) {
 		$netstatOutput = netstat -ano | Select-String ":$port\s+.*LISTENING"
 		if ($netstatOutput) {
 			foreach ($line in $netstatOutput) {
-				$matches = [regex]::Matches($line, '\s+(\d+)\s*$')
-				if ($matches.Count -gt 0) {
-					$pid = [int]$matches[0].Groups[1].Value
-					if ($pid -gt 0) {
+				$lineMatches = [regex]::Matches($line, '\s+(\d+)\s*$')
+				if ($lineMatches.Count -gt 0) {
+					$processId = [int]$lineMatches[0].Groups[1].Value
+					if ($processId -gt 0) {
 						try {
-							$proc = Get-Process -Id $pid -ErrorAction SilentlyContinue
+							$proc = Get-Process -Id $processId -ErrorAction SilentlyContinue
 							if ($proc) {
-								Write-Host "  [!] Port $port still in use (netstat check) by process $($proc.ProcessName) (PID: $pid)" -ForegroundColor Red
-								Stop-Process -Id $pid -Force -ErrorAction SilentlyContinue
+								Write-Host "  [!] Port $port still in use (netstat check) by process $($proc.ProcessName) (PID: $processId)" -ForegroundColor Red
+								Stop-Process -Id $processId -Force -ErrorAction SilentlyContinue
 								$portsStillInUse += $port
 							}
 						} catch {}

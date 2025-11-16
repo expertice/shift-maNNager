@@ -534,7 +534,8 @@ export type RealtimeEventType =
   | 'conflict_detected'
   | 'schedule_published'
   | 'exchange_request_created'
-  | 'exchange_request_resolved';
+  | 'exchange_request_resolved'
+  | 'roster_updated'; // Обновление ростера (паттерны, порядок сотрудников и т.д.)
 
 /**
  * Real-time событие
@@ -678,6 +679,7 @@ export interface LaborLawSettings {
   enabledRules: string[];
   workHoursSource: WorkHoursSource;
   customApiUrl: string | null;
+  selectedYear: number | null;
   lastSyncAt: Date | null;
   createdAt: Date;
   updatedAt: Date;

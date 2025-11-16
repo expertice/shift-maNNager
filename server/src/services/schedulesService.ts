@@ -1,6 +1,7 @@
 import { prisma } from '../lib/prisma';
 import { Schedule, ScheduleStatus } from '@prisma/client';
 import { validateSchedule } from './laborLawComplianceService.js';
+import { updateVacationRules } from './vacationRulesService';
 
 export interface CreateScheduleData {
   ownerUserId: string;
@@ -212,7 +213,7 @@ export async function createSchedule(data: CreateScheduleData): Promise<Schedule
     );
   }
 
-  return prisma.schedule.create({
+  const schedule = await prisma.schedule.create({
     data: {
       ownerUserId: user.id, // Используем ID из базы данных
       name: data.name,
@@ -221,6 +222,15 @@ export async function createSchedule(data: CreateScheduleData): Promise<Schedule
       status: data.status || 'draft',
     },
   });
+
+  // Автоматически создать правила отпусков с дефолтными значениями
+  await updateVacationRules(schedule.id, {
+    availableDays: 28,
+    minContinuousDays: 14,
+    maxConcurrentEmployees: 1,
+  });
+
+  return schedule;
 }
 
 /**
@@ -326,6 +336,26 @@ export async function duplicateSchedule(
       status: 'draft',
     },
   });
+
+  // Копируем правила отпусков
+  const sourceVacationRules = await prisma.vacationRule.findUnique({
+    where: { scheduleId: sourceSchedule.id },
+  });
+
+  if (sourceVacationRules) {
+    await updateVacationRules(newSchedule.id, {
+      availableDays: sourceVacationRules.availableDays,
+      minContinuousDays: sourceVacationRules.minContinuousDays,
+      maxConcurrentEmployees: sourceVacationRules.maxConcurrentEmployees,
+    });
+  } else {
+    // Создаем дефолтные правила, если их не было в исходном расписании
+    await updateVacationRules(newSchedule.id, {
+      availableDays: 28,
+      minContinuousDays: 14,
+      maxConcurrentEmployees: 1,
+    });
+  }
 
   // Копируем отделы
   if (sourceSchedule.departments.length > 0) {

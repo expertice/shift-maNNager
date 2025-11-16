@@ -297,27 +297,102 @@ if (-not (Test-Path ".env")) {
 
 Write-Host ""
 
+# Function to check if a process is running on a port and belongs to our project
+function Test-ProjectProcessOnPort {
+    param(
+        [int]$Port,
+        [string]$ProjectPath,
+        [string[]]$ProcessNames = @('node', 'tsx', 'vite')
+    )
+    
+    # First check if port is in use
+    $portInUse = $false
+    $portPids = @()
+    
+    try {
+        $connections = Get-NetTCPConnection -LocalPort $Port -State Listen,Established -ErrorAction SilentlyContinue
+        if ($connections) {
+            $portPids = $connections | Select-Object -ExpandProperty OwningProcess -Unique
+            $portInUse = $true
+        }
+    } catch {}
+    
+    if (-not $portInUse) {
+        return $false
+    }
+    
+    # Check if any process on this port is from our project
+    foreach ($processId in $portPids) {
+        try {
+            $proc = Get-Process -Id $processId -ErrorAction SilentlyContinue
+            if ($proc) {
+                # Check if it's one of our process types
+                if ($proc.ProcessName -in $ProcessNames) {
+                    # Check command line to see if it's from our project
+                    $procInfo = Get-CimInstance Win32_Process -Filter "ProcessId = $processId" -ErrorAction SilentlyContinue
+                    if ($procInfo -and $procInfo.CommandLine) {
+                        $cmdLine = $procInfo.CommandLine
+                        if ($cmdLine -like "*$ProjectPath*" -or $cmdLine -like "*shift-manager*") {
+                            return $true
+                        }
+                    }
+                }
+            }
+        } catch {}
+    }
+    
+    # Also check for PowerShell processes that might be running our scripts
+    try {
+        $psProcs = Get-CimInstance Win32_Process -Filter "Name = 'powershell.exe'" -ErrorAction SilentlyContinue
+        foreach ($ps in $psProcs) {
+            if ($ps.CommandLine -and (
+                $ps.CommandLine -like "*shift-manager-backend*" -or
+                $ps.CommandLine -like "*$ProjectPath*server*" -and $ps.CommandLine -like "*npm run dev*"
+            )) {
+                # Check if this PowerShell has a child process on our port
+                $childProcs = Get-CimInstance Win32_Process -Filter "ParentProcessId = $($ps.ProcessId)" -ErrorAction SilentlyContinue
+                foreach ($child in $childProcs) {
+                    if ($child.ProcessName -in $ProcessNames) {
+                        $childConnections = Get-NetTCPConnection -OwningProcess $child.ProcessId -ErrorAction SilentlyContinue
+                        if ($childConnections | Where-Object { $_.LocalPort -eq $Port }) {
+                            return $true
+                        }
+                    }
+                }
+            }
+        }
+    } catch {}
+    
+    return $false
+}
+
 # Step 4: Start backend
 Write-Host "[5/7] Starting backend server..." -ForegroundColor Yellow
 
 # Ensure we're in project root
 Set-Location $ProjectRoot
 
-# Check if backend is already running
-$backendPort = Get-NetTCPConnection -LocalPort 3000 -ErrorAction SilentlyContinue
-if ($backendPort) {
-    Write-Host "  [!] Port 3000 is already in use. Backend may already be running." -ForegroundColor Yellow
-    Write-Host "  -> Skipping backend startup" -ForegroundColor Cyan
+# Check if backend is already running (check both port and process)
+$backendRunning = Test-ProjectProcessOnPort -Port 3000 -ProjectPath $ProjectRoot -ProcessNames @('node', 'tsx')
+if ($backendRunning) {
+    Write-Host "  [+] Backend is already running on port 3000" -ForegroundColor Green
 } else {
-    Write-Host "  -> Starting backend server in new PowerShell window..." -ForegroundColor Cyan
-    $serverPath = Join-Path $ProjectRoot "server"
-    $backendScript = "cd '$serverPath'`r`n`$env:NODE_ENV='development'`r`nnpm run dev"
-    $backendScript | Out-File -FilePath "$env:TEMP\shift-manager-backend.ps1" -Encoding UTF8
-    
-    Start-Process powershell -ArgumentList "-NoExit", "-File", "$env:TEMP\shift-manager-backend.ps1" -WindowStyle Normal
-    Write-Host "  -> Waiting for backend to start..." -ForegroundColor Cyan
-    Start-Sleep -Seconds 5
-    Write-Host "  [+] Backend server started (http://localhost:3000)" -ForegroundColor Green
+    # Check if port is in use by something else
+    $portInUse = Get-NetTCPConnection -LocalPort 3000 -ErrorAction SilentlyContinue
+    if ($portInUse) {
+        Write-Host "  [!] Port 3000 is in use by another process. Please stop it first." -ForegroundColor Red
+        Write-Host "      Use 'netstat -ano | findstr :3000' to find the process" -ForegroundColor Yellow
+    } else {
+        Write-Host "  -> Starting backend server in new PowerShell window..." -ForegroundColor Cyan
+        $serverPath = Join-Path $ProjectRoot "server"
+        $backendScript = "cd '$serverPath'`r`n`$env:NODE_ENV='development'`r`nnpm run dev"
+        $backendScript | Out-File -FilePath "$env:TEMP\shift-manager-backend.ps1" -Encoding UTF8
+        
+        Start-Process powershell -ArgumentList "-NoExit", "-File", "$env:TEMP\shift-manager-backend.ps1" -WindowStyle Normal
+        Write-Host "  -> Waiting for backend to start..." -ForegroundColor Cyan
+        Start-Sleep -Seconds 5
+        Write-Host "  [+] Backend server started (http://localhost:3000)" -ForegroundColor Green
+    }
 }
 
 Write-Host ""
@@ -328,20 +403,26 @@ Write-Host "[6/7] Starting frontend application..." -ForegroundColor Yellow
 # Ensure we're in project root
 Set-Location $ProjectRoot
 
-# Check if frontend is already running
-$frontendPort = Get-NetTCPConnection -LocalPort 5173 -ErrorAction SilentlyContinue
-if ($frontendPort) {
-    Write-Host "  [!] Port 5173 is already in use. Frontend may already be running." -ForegroundColor Yellow
-    Write-Host "  -> Skipping frontend startup" -ForegroundColor Cyan
+# Check if frontend is already running (check both port and process)
+$frontendRunning = Test-ProjectProcessOnPort -Port 5173 -ProjectPath $ProjectRoot -ProcessNames @('node', 'vite')
+if ($frontendRunning) {
+    Write-Host "  [+] Frontend is already running on port 5173" -ForegroundColor Green
 } else {
-    Write-Host "  -> Starting frontend server in new PowerShell window..." -ForegroundColor Cyan
-    $frontendScript = "cd '$ProjectRoot'`r`n`$env:NODE_ENV='development'`r`nnpm run dev"
-    $frontendScript | Out-File -FilePath "$env:TEMP\shift-manager-frontend.ps1" -Encoding UTF8
-    
-    Start-Process powershell -ArgumentList "-NoExit", "-File", "$env:TEMP\shift-manager-frontend.ps1" -WindowStyle Normal
-    Write-Host "  -> Waiting for frontend to start..." -ForegroundColor Cyan
-    Start-Sleep -Seconds 3
-    Write-Host "  [+] Frontend server started (http://localhost:5173)" -ForegroundColor Green
+    # Check if port is in use by something else
+    $portInUse = Get-NetTCPConnection -LocalPort 5173 -ErrorAction SilentlyContinue
+    if ($portInUse) {
+        Write-Host "  [!] Port 5173 is in use by another process. Please stop it first." -ForegroundColor Red
+        Write-Host "      Use 'netstat -ano | findstr :5173' to find the process" -ForegroundColor Yellow
+    } else {
+        Write-Host "  -> Starting frontend server in new PowerShell window..." -ForegroundColor Cyan
+        $frontendScript = "cd '$ProjectRoot'`r`n`$env:NODE_ENV='development'`r`nnpm run dev"
+        $frontendScript | Out-File -FilePath "$env:TEMP\shift-manager-frontend.ps1" -Encoding UTF8
+        
+        Start-Process powershell -ArgumentList "-NoExit", "-File", "$env:TEMP\shift-manager-frontend.ps1" -WindowStyle Normal
+        Write-Host "  -> Waiting for frontend to start..." -ForegroundColor Cyan
+        Start-Sleep -Seconds 3
+        Write-Host "  [+] Frontend server started (http://localhost:5173)" -ForegroundColor Green
+    }
 }
 
 Write-Host ""

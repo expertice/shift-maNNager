@@ -3,7 +3,7 @@
  */
 
 import { useEffect, useState } from 'react';
-import { getSettings, updateSettings } from '@services/api/laborLawComplianceApi';
+import { getSettings, updateSettings, getMonthlyHoursNorms } from '@services/api/laborLawComplianceApi';
 import type { LaborLawSettings } from '@types';
 
 interface LaborLawSettingsModalProps {
@@ -11,11 +11,18 @@ interface LaborLawSettingsModalProps {
   onClose: () => void;
 }
 
+const monthNames = [
+  'Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь',
+  'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь'
+];
+
 export default function LaborLawSettingsModal({ isOpen, onClose }: LaborLawSettingsModalProps) {
   const [settings, setSettings] = useState<LaborLawSettings | null>(null);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [monthlyNorms, setMonthlyNorms] = useState<{ month: number; hours: number }[]>([]);
+  const [loadingNorms, setLoadingNorms] = useState(false);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -28,11 +35,28 @@ export default function LaborLawSettingsModal({ isOpen, onClose }: LaborLawSetti
       const data = await getSettings();
       setSettings(data);
       setError(null);
+      
+      // Загружаем месячные нормы для выбранного года
+      const year = data.selectedYear || new Date().getFullYear();
+      await loadMonthlyNorms(year, data.maxHoursPerWeek);
     } catch (err) {
       setError('Ошибка загрузки настроек');
       console.error(err);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const loadMonthlyNorms = async (year: number, weeklyHours: number) => {
+    try {
+      setLoadingNorms(true);
+      const norms = await getMonthlyHoursNorms(year, weeklyHours);
+      setMonthlyNorms(norms);
+    } catch (err) {
+      console.error('Ошибка загрузки месячных норм:', err);
+      setMonthlyNorms([]);
+    } finally {
+      setLoadingNorms(false);
     }
   };
 
@@ -86,100 +110,141 @@ export default function LaborLawSettingsModal({ isOpen, onClose }: LaborLawSetti
             </div>
           ) : (
             <div className="space-y-6">
-              {/* Максимальная продолжительность смены */}
+              {/* Селектор года */}
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Максимальная продолжительность смены (часы)
-                  <span className="text-xs text-gray-500 ml-2">Ст. 94 ТК РФ</span>
+                  Год для расчета норм часов
+                  <span className="text-xs text-gray-500 ml-2">Используется для расчета месячных норм</span>
                 </label>
-                <input
-                  type="number"
-                  value={settings.maxWorkingHoursPerShift}
-                  onChange={(e) =>
+                <select
+                  value={settings.selectedYear || new Date().getFullYear()}
+                  onChange={async (e) => {
+                    const year = e.target.value ? Number(e.target.value) : null;
                     setSettings({
                       ...settings,
-                      maxWorkingHoursPerShift: Number(e.target.value),
-                    })
-                  }
+                      selectedYear: year,
+                    });
+                    if (year) {
+                      await loadMonthlyNorms(year, settings.maxHoursPerWeek);
+                    }
+                  }}
                   className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                />
+                >
+                  {Array.from({ length: 5 }, (_, i) => new Date().getFullYear() - 2 + i).map((year) => (
+                    <option key={year} value={year}>
+                      {year}
+                    </option>
+                  ))}
+                </select>
               </div>
 
-              {/* Норма часов в неделю */}
+              {/* Нормы часов по месяцам */}
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Норма часов в неделю
-                  <span className="text-xs text-gray-500 ml-2">Ст. 91 ТК РФ</span>
+                  Нормы часов по месяцам
+                  <span className="text-xs text-gray-500 ml-2">Рассчитываются автоматически на основе производственного календаря</span>
                 </label>
-                <input
-                  type="number"
-                  value={settings.maxHoursPerWeek}
-                  onChange={(e) =>
-                    setSettings({
-                      ...settings,
-                      maxHoursPerWeek: Number(e.target.value),
-                    })
-                  }
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                />
+                {loadingNorms ? (
+                  <div className="grid grid-cols-4 gap-2 p-4 border border-gray-200 rounded-md">
+                    {[...Array(12)].map((_, i) => (
+                      <div key={i} className="animate-pulse bg-gray-200 h-16 rounded"></div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-4 gap-2 p-4 border border-gray-200 rounded-md bg-gray-50">
+                    {monthlyNorms.map((norm) => (
+                      <div
+                        key={norm.month}
+                        className="bg-white p-2 rounded border border-gray-200"
+                      >
+                        <div className="text-xs text-gray-500 mb-1">{monthNames[norm.month - 1]}</div>
+                        <div className="text-sm font-semibold text-gray-700">{norm.hours.toFixed(2)} ч</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
 
-              {/* Норма часов в месяц */}
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Норма часов в месяц
-                  <span className="text-xs text-gray-500 ml-2">Ст. 91 ТК РФ</span>
-                </label>
-                <input
-                  type="number"
-                  step="0.01"
-                  value={settings.maxHoursPerMonth}
-                  onChange={(e) =>
-                    setSettings({
-                      ...settings,
-                      maxHoursPerMonth: Number(e.target.value),
-                    })
-                  }
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                />
-              </div>
+              {/* Основные настройки - компактное размещение */}
+              <div className="grid grid-cols-2 gap-4">
+                {/* Максимальная продолжительность смены */}
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Макс. продолжительность смены (ч)
+                    <span className="text-xs text-gray-500 ml-2">Ст. 94 ТК РФ</span>
+                  </label>
+                  <input
+                    type="number"
+                    value={settings.maxWorkingHoursPerShift}
+                    onChange={(e) =>
+                      setSettings({
+                        ...settings,
+                        maxWorkingHoursPerShift: Number(e.target.value),
+                      })
+                    }
+                    className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
 
-              {/* Допустимое превышение часов в год */}
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Допустимое превышение часов в год (сверхурочные)
-                  <span className="text-xs text-gray-500 ml-2">Ст. 99 ТК РФ</span>
-                </label>
-                <input
-                  type="number"
-                  value={settings.maxOvertimeHoursPerYear}
-                  onChange={(e) =>
-                    setSettings({
-                      ...settings,
-                      maxOvertimeHoursPerYear: Number(e.target.value),
-                    })
-                  }
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                />
-              </div>
+                {/* Норма часов в неделю */}
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Норма часов в неделю
+                    <span className="text-xs text-gray-500 ml-2">Ст. 91 ТК РФ</span>
+                  </label>
+                  <input
+                    type="number"
+                    value={settings.maxHoursPerWeek}
+                    onChange={async (e) => {
+                      const value = Number(e.target.value);
+                      setSettings({
+                        ...settings,
+                        maxHoursPerWeek: value,
+                      });
+                      const year = settings.selectedYear || new Date().getFullYear();
+                      await loadMonthlyNorms(year, value);
+                    }}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
 
-              {/* Максимум рабочих дней подряд */}
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Максимум рабочих дней подряд
-                  <span className="text-xs text-gray-500 ml-2">Ст. 110 ТК РФ</span>
-                </label>
-                <input
-                  type="number"
-                  value={settings.maxConsecutiveWorkDays}
-                  onChange={(e) =>
-                    setSettings({
-                      ...settings,
-                      maxConsecutiveWorkDays: Number(e.target.value),
-                    })
-                  }
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                />
+                {/* Допустимое превышение часов в год */}
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Допустимое превышение в год (ч)
+                    <span className="text-xs text-gray-500 ml-2">Ст. 99 ТК РФ</span>
+                  </label>
+                  <input
+                    type="number"
+                    value={settings.maxOvertimeHoursPerYear}
+                    onChange={(e) =>
+                      setSettings({
+                        ...settings,
+                        maxOvertimeHoursPerYear: Number(e.target.value),
+                      })
+                    }
+                    className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+
+                {/* Максимум рабочих дней подряд */}
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Макс. рабочих дней подряд
+                    <span className="text-xs text-gray-500 ml-2">Ст. 110 ТК РФ</span>
+                  </label>
+                  <input
+                    type="number"
+                    value={settings.maxConsecutiveWorkDays}
+                    onChange={(e) =>
+                      setSettings({
+                        ...settings,
+                        maxConsecutiveWorkDays: Number(e.target.value),
+                      })
+                    }
+                    className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
               </div>
 
               {/* Ночные часы */}

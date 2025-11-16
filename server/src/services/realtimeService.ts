@@ -64,6 +64,27 @@ export function emitShiftUpdateEvent(
 }
 
 /**
+ * Отправить событие об обновлении ростера (паттерны, порядок сотрудников и т.д.)
+ */
+export function emitRosterUpdateEvent(
+  scheduleId: string,
+  updateType: 'pattern_offset' | 'employee_order' | 'employee_added' | 'employee_updated' | 'employee_deleted' | 'shift_profile_updated',
+  data: unknown
+): void {
+  try {
+    io.to(`schedule:${scheduleId}`).emit('roster:updated', {
+      scheduleId,
+      updateType,
+      timestamp: new Date().toISOString(),
+      data,
+    });
+    logger.debug(`Emitted roster:updated (${updateType}) for schedule ${scheduleId}`);
+  } catch (error) {
+    logger.error('Error emitting roster update event:', error);
+  }
+}
+
+/**
  * Подключить клиента к комнате схемы
  */
 export function joinScheduleRoom(socketId: string, scheduleId: string): void {

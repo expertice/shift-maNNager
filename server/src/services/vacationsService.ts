@@ -7,6 +7,7 @@ import {
   getEmployeeAllocation,
   getUsedVacationDays,
   checkConcurrentVacationsLimit,
+  checkMinContinuousDaysWarning,
 } from './vacationRulesService';
 
 export interface CreateVacationData {
@@ -31,6 +32,38 @@ export async function getVacationsBySchedule(
   employeeId?: string,
   status?: string
 ): Promise<Vacation[]> {
+  // Если указан конкретный employeeId, используем его напрямую
+  if (employeeId) {
+    const where: any = {
+      employeeId,
+    };
+
+    if (status && ['approved', 'pending', 'rejected', 'cancelled'].includes(status)) {
+      where.status = status as VacationStatus;
+    }
+
+    const vacations = await prisma.vacation.findMany({
+      where,
+      include: {
+        employee: true,
+      },
+      orderBy: {
+        startDate: 'asc',
+      },
+    });
+
+    // Ограничиваем поля employee для избежания проблем с сериализацией
+    return vacations.map(v => ({
+      ...v,
+      employee: {
+        id: v.employee.id,
+        fullName: v.employee.fullName,
+        tabNumber: v.employee.tabNumber,
+        scheduleId: v.employee.scheduleId,
+      },
+    })) as Vacation[];
+  }
+
   // Сначала получаем всех сотрудников схемы, затем их отпуска
   const employees = await prisma.employee.findMany({
     where: { scheduleId },
@@ -39,21 +72,22 @@ export async function getVacationsBySchedule(
 
   const employeeIds = employees.map((e) => e.id);
 
+  // Если нет сотрудников в схеме, возвращаем пустой массив
+  if (employeeIds.length === 0) {
+    return [];
+  }
+
   const where: any = {
     employeeId: {
       in: employeeIds,
     },
   };
 
-  if (employeeId) {
-    where.employeeId = employeeId;
-  }
-
   if (status && ['approved', 'pending', 'rejected', 'cancelled'].includes(status)) {
     where.status = status as VacationStatus;
   }
 
-  return prisma.vacation.findMany({
+  const vacations = await prisma.vacation.findMany({
     where,
     include: {
       employee: true,
@@ -62,11 +96,33 @@ export async function getVacationsBySchedule(
       startDate: 'asc',
     },
   });
+
+  // Ограничиваем поля employee для избежания проблем с сериализацией
+  return vacations.map(v => ({
+    ...v,
+    employee: {
+      id: v.employee.id,
+      fullName: v.employee.fullName,
+      tabNumber: v.employee.tabNumber,
+      scheduleId: v.employee.scheduleId,
+    },
+  })) as Vacation[];
 }
 
 /**
  * Создать отпуск с валидацией
  */
+const normalizeDateInput = (input: Date | string): Date => {
+  const date = input instanceof Date ? input : new Date(input);
+  return new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+};
+
+const shiftDate = (date: Date, days: number): Date => {
+  const shifted = new Date(date);
+  shifted.setUTCDate(shifted.getUTCDate() + days);
+  return shifted;
+};
+
 export async function createVacation(data: CreateVacationData): Promise<Vacation> {
   const employee = await prisma.employee.findUnique({
     where: { id: data.employeeId },
@@ -85,7 +141,7 @@ export async function createVacation(data: CreateVacationData): Promise<Vacation
   const rules = await getVacationRules(scheduleId);
 
   // Валидация 1: Проверка лимита одновременных отпусков
-  if (rules && rules.maxConcurrentEmployees) {
+  if (rules?.maxConcurrentEmployees !== undefined && rules.maxConcurrentEmployees > 0) {
     const concurrentCheck = await checkConcurrentVacationsLimit(
       scheduleId,
       data.startDate,
@@ -119,18 +175,8 @@ export async function createVacation(data: CreateVacationData): Promise<Vacation
     }
   }
 
-  // Валидация 3: Минимальная длина периода
-  if (rules && rules.minContinuousDays) {
-    const vacationDays = Math.ceil(
-      (data.endDate.getTime() - data.startDate.getTime()) / (1000 * 60 * 60 * 24)
-    ) + 1;
-
-    if (vacationDays < rules.minContinuousDays) {
-      throw new Error(
-        `Минимальная длина периода отпуска: ${rules.minContinuousDays} дней. Выбранный период: ${vacationDays} дней`
-      );
-    }
-  }
+  // Валидация 3: Минимальная длина периода - убрана, так как пользователь может создавать отпуска любой длины
+  // Проверка будет выполнена после создания отпуска
 
   // Валидация 4: Период в рамках расписания
   if (employee.schedule) {
@@ -144,11 +190,48 @@ export async function createVacation(data: CreateVacationData): Promise<Vacation
     }
   }
 
+  // Убеждаемся, что даты установлены на начало дня (00:00:00) в локальном времени
+  // Если data.startDate уже Date объект, используем его, иначе создаем новый
+  const normalizeDateInput = (input: Date | string): Date => {
+    const date = input instanceof Date ? input : new Date(input);
+    return new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+  };
+
+  let startDate = normalizeDateInput(data.startDate);
+  let endDate = normalizeDateInput(data.endDate);
+
+  const adjacentVacations = await prisma.vacation.findMany({
+    where: {
+      employeeId: data.employeeId,
+      startDate: { lte: shiftDate(endDate, 1) },
+      endDate: { gte: shiftDate(startDate, -1) },
+    },
+  });
+
+  if (adjacentVacations.length > 0) {
+    for (const vacation of adjacentVacations) {
+      if (vacation.startDate < startDate) {
+        startDate = vacation.startDate;
+      }
+      if (vacation.endDate > endDate) {
+        endDate = vacation.endDate;
+      }
+    }
+
+    await prisma.vacation.deleteMany({
+      where: {
+        id: {
+          in: adjacentVacations.map(v => v.id),
+        },
+      },
+    });
+  }
+
   const vacation = await prisma.vacation.create({
     data: {
       employeeId: data.employeeId,
-      startDate: data.startDate,
-      endDate: data.endDate,
+      startDate: startDate,
+      endDate: endDate,
       status: data.status,
       createdBy: data.createdBy,
     },
@@ -157,13 +240,38 @@ export async function createVacation(data: CreateVacationData): Promise<Vacation
     },
   });
 
+  // Ограничиваем поля employee для избежания проблем с сериализацией
+  const vacationWithLimitedEmployee: Vacation = {
+    id: vacation.id,
+    employeeId: vacation.employeeId,
+    startDate: vacation.startDate,
+    endDate: vacation.endDate,
+    status: vacation.status,
+    createdBy: vacation.createdBy,
+    createdAt: vacation.createdAt,
+    updatedAt: vacation.updatedAt,
+    employee: {
+      id: vacation.employee.id,
+      fullName: vacation.employee.fullName,
+      tabNumber: vacation.employee.tabNumber,
+      scheduleId: vacation.employee.scheduleId,
+    } as any, // Временно используем any, так как Employee имеет больше полей
+  };
+
   // Отправляем real-time событие
-  realtimeService.emitVacationEvent(vacation.employee.scheduleId, 'vacation:added', vacation);
+  realtimeService.emitVacationEvent(vacation.employee.scheduleId, 'vacation:added', vacationWithLimitedEmployee);
 
   // Обнаруживаем конфликты
   await detectConflicts(vacation.employee.scheduleId);
 
-  return vacation;
+  // Проверяем предупреждение о минимальной длине периода
+  // Используем уже объявленную переменную year из валидации 2
+  const warning = await checkMinContinuousDaysWarning(scheduleId, data.employeeId, year);
+  
+  // Добавляем предупреждение к объекту отпуска (будет использовано в контроллере)
+  (vacationWithLimitedEmployee as any).warning = warning.hasWarning ? warning.message : undefined;
+
+  return vacationWithLimitedEmployee;
 }
 
 /**
@@ -191,14 +299,42 @@ export async function updateVacation(
   }
 
   // Определяем даты для валидации (используем новые, если указаны, иначе старые)
-  const startDate = data.startDate || vacation.startDate;
-  const endDate = data.endDate || vacation.endDate;
+  let startDate = normalizeDateInput(data.startDate || vacation.startDate);
+  let endDate = normalizeDateInput(data.endDate || vacation.endDate);
+
+  const adjacentVacations = await prisma.vacation.findMany({
+    where: {
+      employeeId: vacation.employeeId,
+      id: { not: vacationId },
+      startDate: { lte: shiftDate(endDate, 1) },
+      endDate: { gte: shiftDate(startDate, -1) },
+    },
+  });
+
+  if (adjacentVacations.length > 0) {
+    for (const existing of adjacentVacations) {
+      if (existing.startDate < startDate) {
+        startDate = existing.startDate;
+      }
+      if (existing.endDate > endDate) {
+        endDate = existing.endDate;
+      }
+    }
+
+    await prisma.vacation.deleteMany({
+      where: {
+        id: {
+          in: adjacentVacations.map(v => v.id),
+        },
+      },
+    });
+  }
 
   // Получаем правила отпусков
   const rules = await getVacationRules(scheduleId);
 
   // Валидация 1: Проверка лимита одновременных отпусков
-  if (rules && rules.maxConcurrentEmployees) {
+  if (rules?.maxConcurrentEmployees !== undefined && rules.maxConcurrentEmployees > 0) {
     const concurrentCheck = await checkConcurrentVacationsLimit(
       scheduleId,
       startDate,
@@ -233,18 +369,8 @@ export async function updateVacation(
     }
   }
 
-  // Валидация 3: Минимальная длина периода
-  if (rules && rules.minContinuousDays) {
-    const vacationDays = Math.ceil(
-      (endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24)
-    ) + 1;
-
-    if (vacationDays < rules.minContinuousDays) {
-      throw new Error(
-        `Минимальная длина периода отпуска: ${rules.minContinuousDays} дней. Выбранный период: ${vacationDays} дней`
-      );
-    }
-  }
+  // Валидация 3: Минимальная длина периода - убрана, так как пользователь может создавать отпуска любой длины
+  // Проверка будет выполнена после обновления отпуска
 
   // Валидация 4: Период в рамках расписания
   if (vacation.employee.schedule) {
@@ -258,25 +384,49 @@ export async function updateVacation(
     }
   }
 
+  const updatePayload: Record<string, any> = {
+    startDate,
+    endDate,
+  };
+  if (data.status) {
+    updatePayload.status = data.status;
+  }
+
   const updated = await prisma.vacation.update({
     where: { id: vacationId },
     data: {
-      ...(data.startDate && { startDate: data.startDate }),
-      ...(data.endDate && { endDate: data.endDate }),
-      ...(data.status && { status: data.status }),
+      ...updatePayload,
     },
     include: {
       employee: true,
     },
   });
 
+  // Ограничиваем поля employee для избежания проблем с сериализацией
+  const updatedWithLimitedEmployee = {
+    ...updated,
+    employee: {
+      id: updated.employee.id,
+      fullName: updated.employee.fullName,
+      tabNumber: updated.employee.tabNumber,
+      scheduleId: updated.employee.scheduleId,
+    },
+  };
+
   // Отправляем real-time событие
-  realtimeService.emitVacationEvent(scheduleId, 'vacation:updated', updated);
+  realtimeService.emitVacationEvent(scheduleId, 'vacation:updated', updatedWithLimitedEmployee);
 
   // Обнаруживаем конфликты
   await detectConflicts(scheduleId);
 
-  return updated;
+  // Проверяем предупреждение о минимальной длине периода
+  // Используем уже объявленную переменную year из валидации 2
+  const warning = await checkMinContinuousDaysWarning(scheduleId, vacation.employeeId, year);
+  
+  // Добавляем предупреждение к объекту отпуска (будет использовано в контроллере)
+  (updatedWithLimitedEmployee as any).warning = warning.hasWarning ? warning.message : undefined;
+
+  return updatedWithLimitedEmployee as Vacation;
 }
 
 /**
@@ -290,7 +440,12 @@ export async function deleteVacation(
   const vacation = await prisma.vacation.findFirst({
     where: { id: vacationId },
     include: {
-      employee: true,
+      employee: {
+        select: {
+          id: true,
+          scheduleId: true,
+        },
+      },
     },
   });
 

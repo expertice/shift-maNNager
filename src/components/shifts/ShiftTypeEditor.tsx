@@ -5,6 +5,7 @@ import {
   calculateShiftParameters,
   timeToMinutes,
 } from '@services/utils/shiftCalculations';
+import { getSettings } from '@services/api/laborLawComplianceApi';
 import { Copy, Trash2, Save } from 'lucide-react';
 
 /**
@@ -72,8 +73,29 @@ export const ShiftTypeEditor: React.FC<ShiftTypeEditorProps> = ({
   const [manualBreaks, setManualBreaks] = useState<ShiftBreak[]>(
     shiftType?.breaks || []
   );
+  const [laborSettings, setLaborSettings] = useState<{ nightHoursStart: string; nightHoursEnd: string } | null>(null);
 
   const [errors, setErrors] = useState<Record<string, string>>({});
+
+  // Загрузка настроек ТК РФ для расчета ночных часов
+  useEffect(() => {
+    const loadLaborSettings = async () => {
+      try {
+        const settings = await getSettings();
+        setLaborSettings({
+          nightHoursStart: settings.nightHoursStart,
+          nightHoursEnd: settings.nightHoursEnd,
+        });
+      } catch (error) {
+        console.warn('Failed to load labor law settings, using defaults', error);
+        setLaborSettings({
+          nightHoursStart: '22:00',
+          nightHoursEnd: '06:00',
+        });
+      }
+    };
+    loadLaborSettings();
+  }, []);
 
   // Синхронизация с внешними данными
   useEffect(() => {
@@ -95,8 +117,10 @@ export const ShiftTypeEditor: React.FC<ShiftTypeEditorProps> = ({
     if (!startTime || !endTime) {
       return { nightHours: 0, workingHours: 0, breaks: [] };
     }
-    return calculateShiftParameters(startTime, endTime, manualBreaks);
-  }, [startTime, endTime, manualBreaks]);
+    const nightStart = laborSettings?.nightHoursStart || '22:00';
+    const nightEnd = laborSettings?.nightHoursEnd || '06:00';
+    return calculateShiftParameters(startTime, endTime, manualBreaks, nightStart, nightEnd);
+  }, [startTime, endTime, manualBreaks, laborSettings]);
 
   // Финальные перерывы (автоматические + ручные)
   const allBreaks = shiftParams.breaks;

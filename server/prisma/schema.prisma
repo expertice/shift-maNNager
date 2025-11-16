@@ -598,6 +598,7 @@ model LaborLawSettings {
   enabledRules              Json      @map("enabled_rules") // Массив правил для проверки
   workHoursSource           String    @default("production_calendar") @map("work_hours_source") // manual, production_calendar, consultant_ru, custom_api
   customApiUrl              String?   @map("custom_api_url")
+  selectedYear               Int?      @map("selected_year") // Год для расчета норм часов
   lastSyncAt                DateTime? @map("last_sync_at")
   createdAt                 DateTime  @default(now()) @map("created_at")
   updatedAt                 DateTime  @updatedAt @map("updated_at")

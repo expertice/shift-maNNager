@@ -104,35 +104,69 @@ export function calculateShiftBreaks(
 
 /**
  * Расчет ночных часов в смене
- * Ночные часы: с 22:00 до 06:00
+ * @param startTime - время начала смены (HH:mm)
+ * @param endTime - время окончания смены (HH:mm)
+ * @param nightHoursStart - начало ночных часов (по умолчанию "22:00")
+ * @param nightHoursEnd - конец ночных часов (по умолчанию "06:00")
  */
-export function calculateNightHours(startTime: string, endTime: string): number {
+export function calculateNightHours(
+  startTime: string, 
+  endTime: string,
+  nightHoursStart: string = '22:00',
+  nightHoursEnd: string = '06:00'
+): number {
   const start = timeToMinutes(startTime);
   const end = timeToMinutes(endTime);
+  const nightStart = timeToMinutes(nightHoursStart);
+  const nightEnd = timeToMinutes(nightHoursEnd);
   let nightMinutes = 0;
 
+  // Ночной период обычно переходит через полночь (например, 22:00-06:00)
+  // Если nightStart > nightEnd, значит период переходит через полночь
+  
   // Если смена начинается и заканчивается в один день
   if (end > start) {
     for (let minute = start; minute < end; minute++) {
-      const hour = Math.floor(minute / 60) % 24;
-      if (hour >= 22 || hour < 6) {
-        nightMinutes++;
+      const minuteOfDay = minute % (24 * 60);
+      // Проверяем, попадает ли минута в ночной период
+      if (nightStart > nightEnd) {
+        // Ночной период переходит через полночь (например, 22:00-06:00)
+        if (minuteOfDay >= nightStart || minuteOfDay < nightEnd) {
+          nightMinutes++;
+        }
+      } else {
+        // Ночной период в пределах одного дня (редкий случай)
+        if (minuteOfDay >= nightStart && minuteOfDay < nightEnd) {
+          nightMinutes++;
+        }
       }
     }
   } else {
     // Смена переходит через полночь (например, 21:00-09:00)
     // Ночные часы до полуночи
     for (let minute = start; minute < 24 * 60; minute++) {
-      const hour = Math.floor(minute / 60) % 24;
-      if (hour >= 22 || hour < 6) {
-        nightMinutes++;
+      const minuteOfDay = minute % (24 * 60);
+      if (nightStart > nightEnd) {
+        if (minuteOfDay >= nightStart || minuteOfDay < nightEnd) {
+          nightMinutes++;
+        }
+      } else {
+        if (minuteOfDay >= nightStart && minuteOfDay < nightEnd) {
+          nightMinutes++;
+        }
       }
     }
     // Ночные часы после полуночи
     for (let minute = 0; minute < end; minute++) {
-      const hour = Math.floor(minute / 60) % 24;
-      if (hour >= 22 || hour < 6) {
-        nightMinutes++;
+      const minuteOfDay = minute % (24 * 60);
+      if (nightStart > nightEnd) {
+        if (minuteOfDay >= nightStart || minuteOfDay < nightEnd) {
+          nightMinutes++;
+        }
+      } else {
+        if (minuteOfDay >= nightStart && minuteOfDay < nightEnd) {
+          nightMinutes++;
+        }
       }
     }
   }
@@ -174,11 +208,13 @@ export interface ShiftCalculationsResult {
 export function calculateShiftParameters(
   startTime: string,
   endTime: string,
-  manualBreaks: ShiftBreak[] = []
+  manualBreaks: ShiftBreak[] = [],
+  nightHoursStart: string = '22:00',
+  nightHoursEnd: string = '06:00'
 ): ShiftCalculationsResult {
   const breaks = calculateShiftBreaks(startTime, endTime, manualBreaks);
   const duration = calculateShiftDuration(startTime, endTime) / 60;
-  const nightHours = calculateNightHours(startTime, endTime);
+  const nightHours = calculateNightHours(startTime, endTime, nightHoursStart, nightHoursEnd);
   const workingHours = calculateWorkingHours(startTime, endTime, breaks);
 
   return {

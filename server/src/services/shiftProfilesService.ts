@@ -3,6 +3,8 @@ import { ShiftProfile, ShiftType, ShiftProfilePattern, RosterPatternInstance } f
 import { computePositionInCycle, getSequenceFromPatternOrInstance, nextDayUtcStart, normalizeUtcStart } from '../utils/patternCycle';
 import { bulkCreateShifts, BulkShiftData, deleteShiftsByPeriod } from './shiftsService';
 import { startOfDay, eachDayOfInterval } from 'date-fns';
+import { logger } from '../utils/logger';
+import * as rosterSnapshotService from './rosterSnapshotService';
 import {
   calculateShiftsCount,
   calculateTotalHours,
@@ -137,6 +139,33 @@ export async function generateShiftsFromProfile(
   }
 
   const patternStartOffset = schedule.patternStartOffset ?? 0;
+  
+  // Проверяем, есть ли уже сгенерированные смены для этого расписания
+  // Если смен нет, это первая генерация - нужно сбросить все startIndex в 0
+  const existingShiftsCount = await prisma.dailyShift.count({
+    where: {
+      scheduleId,
+      employee: {
+        id: { in: employeeIds },
+      },
+    },
+  });
+  
+  const isFirstGeneration = existingShiftsCount === 0;
+  
+  logger.info('[generateShiftsFromProfile] START', {
+    scheduleId,
+    shiftProfileId,
+    employeeIdsCount: employeeIds.length,
+    startDate: startDate.toISOString(),
+    endDate: endDate.toISOString(),
+    patternStartOffset,
+    existingShiftsCount,
+    isFirstGeneration,
+    note: isFirstGeneration 
+      ? 'First generation - will reset all startIndex to 0' 
+      : 'Regeneration - will preserve startIndex for pattern offset',
+  });
 
   // Получаем профиль с деталями
   const profile = await getShiftProfileById(shiftProfileId);
@@ -144,6 +173,125 @@ export async function generateShiftsFromProfile(
   if (!profile) {
     throw new Error('Shift profile not found');
   }
+
+  // ВАЖНО: При генерации наполняем sequence паттернов, если они пустые
+  // Sequence должен создаваться на основе типов смен из профиля
+  if (!profile.shiftTypes || profile.shiftTypes.length === 0) {
+    throw new Error('Profile has no shift types - cannot generate shifts');
+  }
+
+  // Проверяем и исправляем паттерны с пустым sequence
+  const patternsToFix = profile.patterns?.filter(p => {
+    const seq = p.sequence as (string | null)[] | undefined;
+    if (!seq || seq.length === 0) {
+      return true; // Пустой массив
+    }
+    // Проверяем, что есть хотя бы одно не-null значение
+    const hasValidValue = seq.some(s => s !== null && s !== undefined && s !== '');
+    return !hasValidValue; // Если нет валидных значений, это проблемный паттерн
+  }) || [];
+
+  if (patternsToFix.length > 0) {
+    logger.info('[generateShiftsFromProfile] Generating sequence for patterns with empty sequence', {
+      scheduleId,
+      shiftProfileId,
+      profileName: profile.name,
+      patternsToFixCount: patternsToFix.length,
+      shiftTypesCount: profile.shiftTypes.length,
+    });
+
+    // Генерируем sequence для каждого паттерна на основе типов смен
+    // Комбинированная генерация: используем несколько типов смен в паттерне
+    for (const pattern of patternsToFix) {
+      const generatedSequence: (string | null)[] = [];
+      
+      // Для комбинированной генерации:
+      // - Если типов смен больше 1, чередуем их с выходными
+      // - Для паттерна номер N начинаем с типа смены (N-1) % shiftTypes.length
+      // - Добавляем выходные дни для баланса
+      
+      if (profile.shiftTypes.length === 1) {
+        // Если только один тип смены - заполняем все дни этим типом
+        for (let i = 0; i < pattern.cycleLength; i++) {
+          generatedSequence.push(profile.shiftTypes[0].id);
+        }
+      } else {
+        // Комбинированная генерация: чередуем типы смен с выходными
+        const startShiftTypeIndex = (pattern.patternNumber - 1) % profile.shiftTypes.length;
+        
+        for (let i = 0; i < pattern.cycleLength; i++) {
+          // Каждый второй день - смена, остальные - выходные
+          // Или можно сделать более сложную логику
+          if (i % 2 === 0) {
+            // Четные дни - смена
+            const shiftTypeIndex = (startShiftTypeIndex + Math.floor(i / 2)) % profile.shiftTypes.length;
+            generatedSequence.push(profile.shiftTypes[shiftTypeIndex].id);
+          } else {
+            // Нечетные дни - выходной
+            generatedSequence.push(null);
+          }
+        }
+      }
+      
+      // Обновляем sequence в БД
+      await prisma.shiftProfilePattern.update({
+        where: { id: pattern.id },
+        data: { sequence: generatedSequence },
+      });
+
+      logger.info('[generateShiftsFromProfile] Pattern sequence generated', {
+        patternId: pattern.id,
+        patternNumber: pattern.patternNumber,
+        cycleLength: pattern.cycleLength,
+        generatedSequenceLength: generatedSequence.length,
+        generatedSequence: generatedSequence.slice(0, 10), // Первые 10 элементов для отладки
+        shiftTypesCount: profile.shiftTypes.length,
+        note: 'Sequence generated with combined shift types',
+      });
+    }
+
+    // Перезагружаем профиль с сгенерированными sequence
+    const fixedProfile = await getShiftProfileById(shiftProfileId);
+    if (fixedProfile) {
+      Object.assign(profile, fixedProfile);
+      logger.info('[generateShiftsFromProfile] Profile reloaded after generating sequences', {
+        scheduleId,
+        shiftProfileId,
+        patternsCount: fixedProfile.patterns?.length || 0,
+      });
+    }
+  }
+
+  // ВАЖНО: Проверяем, что у профиля есть паттерны и они валидные
+  logger.info('[generateShiftsFromProfile] Profile loaded', {
+    scheduleId,
+    shiftProfileId,
+    profileName: profile.name,
+    patternsCount: profile.patterns?.length || 0,
+    patterns: profile.patterns?.map(p => ({
+      id: p.id,
+      patternNumber: p.patternNumber,
+      cycleLength: p.cycleLength,
+      sequenceLength: Array.isArray(p.sequence) ? p.sequence.length : 0,
+      sequenceSample: Array.isArray(p.sequence) ? p.sequence.slice(0, 10) : null,
+      sequenceHasNulls: Array.isArray(p.sequence) ? p.sequence.filter(s => s === null).length : 0,
+      sequenceHasValues: Array.isArray(p.sequence) ? p.sequence.filter(s => s !== null && s !== undefined).length : 0,
+      sequenceType: typeof p.sequence,
+      sequenceIsArray: Array.isArray(p.sequence),
+      sequenceRaw: p.sequence, // Полный sequence для отладки
+    })),
+  });
+
+  if (!profile.patterns || profile.patterns.length === 0) {
+    logger.error('[generateShiftsFromProfile] Profile has no patterns', {
+      scheduleId,
+      shiftProfileId,
+      profileName: profile.name,
+    });
+    throw new Error('Shift profile has no patterns');
+  }
+
+  // Проверка уже выполнена выше - если мы дошли сюда, значит паттерны валидные
 
   // Предупреждаем о минимальном количестве сотрудников, но не блокируем генерацию
   if (employeeIds.length < profile.minEmployees) {
@@ -230,10 +378,45 @@ export async function generateShiftsFromProfile(
   // Готовим/гарантируем наличие экземпляров паттернов для сотрудников.
   // ВАЖНО: не переопределяем существующие назначения, чтобы порядок сотрудников между месяцами
   // не влиял на продолжение паттерна.
+  // ВАЖНО: ВСЕГДА перезагружаем экземпляры из БД, чтобы использовать актуальные startIndex
+  // после обновления через updatePatternOffset
   const existingInstances = await prisma.rosterPatternInstance.findMany({
     where: { scheduleId, employeeId: { in: employeesToProcess } },
     include: { pattern: true },
   });
+  
+  logger.info('[generateShiftsFromProfile] Loaded existing instances with startIndex', {
+    scheduleId,
+    shiftProfileId,
+    instancesCount: existingInstances.length,
+    instances: existingInstances.map(inst => ({
+      employeeId: inst.employeeId,
+      startIndex: inst.startIndex,
+      patternId: inst.patternId,
+      hasPattern: !!inst.pattern,
+      patternIdFromPattern: inst.pattern?.id,
+      cycleLength: inst.pattern?.cycleLength,
+      sequenceLength: inst.pattern ? (inst.pattern.sequence as any[]).length : 0,
+      note: 'These startIndex values will be used for position calculation',
+    })),
+  });
+
+  // ВАЖНО: Проверяем, что у всех экземпляров есть паттерны
+  const instancesWithoutPattern = existingInstances.filter(inst => !inst.pattern);
+  if (instancesWithoutPattern.length > 0) {
+    logger.error('[generateShiftsFromProfile] Instances without pattern found', {
+      scheduleId,
+      shiftProfileId,
+      instancesWithoutPatternCount: instancesWithoutPattern.length,
+      instancesWithoutPattern: instancesWithoutPattern.map(inst => ({
+        instanceId: inst.id,
+        employeeId: inst.employeeId,
+        patternId: inst.patternId,
+        note: 'These instances have patternId but pattern is not loaded or does not exist',
+      })),
+    });
+  }
+  
   const employeeIdToInstance: Map<string, RosterPatternInstance & { pattern: ShiftProfilePattern | null }> = new Map(
     existingInstances.map((ri) => [ri.employeeId, ri])
   );
@@ -355,8 +538,10 @@ export async function generateShiftsFromProfile(
 
   // Обновляем существующие экземпляры, если профиль/паттерн изменился,
   // чтобы UI (ростер) показывал актуальную последовательность
-  // Также обновляем startIndex до текущего patternStartOffset из расписания
+  // ВАЖНО: НЕ сбрасываем startIndex к 0, сохраняем текущее значение для перемотки паттернов
   const updates: Parameters<typeof prisma.rosterPatternInstance.update>[0][] = [];
+  const startIndexesBeforeUpdate: Array<{ employeeId: string; startIndex: number }> = [];
+  
   for (let i = 0; i < employeesToProcess.length; i++) {
     const employeeId = employeesToProcess[i];
     const currentInstance = employeeIdToInstance.get(employeeId);
@@ -364,24 +549,59 @@ export async function generateShiftsFromProfile(
     const pattern = profile.patterns[patternIndex];
     const newSequence = pattern.sequence as (string | null)[];
     if (currentInstance) {
+      startIndexesBeforeUpdate.push({
+        employeeId,
+        startIndex: currentInstance.startIndex,
+      });
+      
       const needsPatternChange = currentInstance.patternId !== pattern.id;
       const needsSequenceChange = JSON.stringify(currentInstance.sequence) !== JSON.stringify(newSequence);
       
-      // При генерации смен всегда сбрасываем startIndex к 0 (начинаем с первого дня)
-      // Смещение применяется только через кнопки в ростере (updatePatternOffset)
-      if (needsPatternChange || needsSequenceChange || currentInstance.startIndex !== 0) {
+      // ВАЖНО: При первой генерации (когда смен еще нет) сбрасываем startIndex в 0
+      // При перегенерации после перемотки сохраняем текущий startIndex для перемотки паттернов
+      // Также сбрасываем при изменении паттерна или последовательности
+      const shouldResetStartIndex = isFirstGeneration || needsPatternChange || needsSequenceChange;
+      
+      if (shouldResetStartIndex) {
+        const newStartIndex = isFirstGeneration ? 0 : (needsPatternChange || needsSequenceChange ? 0 : currentInstance.startIndex);
+        
+        logger.info('[generateShiftsFromProfile] Updating instance startIndex', {
+          scheduleId,
+          employeeId,
+          currentStartIndex: currentInstance.startIndex,
+          newStartIndex,
+          reason: isFirstGeneration 
+            ? 'first generation - reset to 0' 
+            : needsPatternChange 
+              ? 'pattern changed - reset to 0' 
+              : 'sequence changed - reset to 0',
+        });
+        
         updates.push({
           where: { id: currentInstance.id },
           data: {
             patternId: pattern.id,
             sequence: newSequence,
-            startIndex: 0, // При генерации всегда начинаем с первого дня
+            startIndex: newStartIndex,
           },
         });
       }
     }
   }
+  
+  logger.info('[generateShiftsFromProfile] Instance startIndexes before generation', {
+    scheduleId,
+    shiftProfileId,
+    startIndexes: startIndexesBeforeUpdate,
+    note: 'These startIndex values will be used for position calculation',
+  });
+  
   if (updates.length > 0) {
+    logger.info('[generateShiftsFromProfile] Updating instances', {
+      scheduleId,
+      updatesCount: updates.length,
+      note: 'Only updating instances with changed pattern/sequence',
+    });
     await prisma.$transaction(updates.map((u) => prisma.rosterPatternInstance.update(u)));
   }
 
@@ -394,14 +614,99 @@ export async function generateShiftsFromProfile(
     employeesToProcess.forEach((employeeId, index) => {
       // Берем закрепленный для сотрудника экземпляр паттерна
       const instance = employeeIdToInstance.get(employeeId);
-      // Если по какой-то причине экземпляра нет — дефолтимся на первый паттерн
+      
+      // ВАЖНО: Проверяем, что у экземпляра есть паттерн
+      if (instance && !instance.pattern) {
+        logger.warn('[generateShiftsFromProfile] Instance without pattern', {
+          scheduleId,
+          employeeId,
+          instanceId: instance.id,
+          instancePatternId: instance.patternId,
+          note: 'This instance has no pattern assigned - will use default pattern',
+        });
+      }
+      
+      // Если по какой-то причине экземпляра нет или у него нет паттерна — дефолтимся на первый паттерн
       const pattern = instance?.pattern ?? profile.patterns[0];
+      
+      if (!pattern) {
+        logger.error('[generateShiftsFromProfile] No pattern available', {
+          scheduleId,
+          employeeId,
+          hasInstance: !!instance,
+          instancePatternId: instance?.patternId,
+          profilePatternsCount: profile.patterns.length,
+        });
+        return; // Пропускаем этого сотрудника (в forEach используется return вместо continue)
+      }
 
-      const positionInCycle = computePositionInCycle(currentDate, baseCycleStart, pattern.cycleLength, instance?.startIndex ?? 0);
+      // Используем startIndex из экземпляра для вычисления позиции
+      // patternStartOffset используется только для отображения в UI (1/10, 2/10 и т.д.)
+      // При генерации смен startIndex уже содержит правильное смещение
+      const employeeOffset = instance?.startIndex ?? 0;
+      const positionInCycle = computePositionInCycle(currentDate, baseCycleStart, pattern.cycleLength, employeeOffset);
+      
+      // Логирование для отслеживания использования startIndex при генерации
+      if (employeeOffset !== 0 && Math.random() < 0.01) { // Логируем 1% случаев для производительности
+        logger.debug('[generateShiftsFromProfile] Using startIndex for position calculation', {
+          scheduleId,
+          employeeId,
+          currentDate: currentDate.toISOString(),
+          baseCycleStart: baseCycleStart.toISOString(),
+          cycleLength: pattern.cycleLength,
+          employeeOffset,
+          positionInCycle,
+        });
+      }
 
       // Получаем тип смены для этой позиции в паттерне (предпочитаем sequence из экземпляра)
       const sequence = getSequenceFromPatternOrInstance(instance?.sequence as (string | null)[] | undefined, pattern);
+      
+      // ВАЖНО: Проверяем, что sequence валидный
+      if (!sequence || sequence.length === 0) {
+        logger.error('[generateShiftsFromProfile] Invalid sequence', {
+          scheduleId,
+          employeeId,
+          hasInstance: !!instance,
+          instanceSequence: instance?.sequence,
+          patternSequence: pattern?.sequence,
+          patternId: pattern?.id,
+          patternCycleLength: pattern?.cycleLength,
+        });
+        return; // Пропускаем этого сотрудника
+      }
+      
+      // Проверяем, что positionInCycle в пределах sequence
+      if (positionInCycle < 0 || positionInCycle >= sequence.length) {
+        logger.error('[generateShiftsFromProfile] Position out of bounds', {
+          scheduleId,
+          employeeId,
+          positionInCycle,
+          sequenceLength: sequence.length,
+          patternCycleLength: pattern?.cycleLength,
+        });
+        return; // Пропускаем этого сотрудника
+      }
+      
       const shiftTypeId = sequence[positionInCycle];
+
+      // Логирование для отладки (только для первых нескольких итераций)
+      if (shifts.length < 5 && Math.random() < 0.1) {
+        logger.info('[generateShiftsFromProfile] Shift generation debug', {
+          scheduleId,
+          employeeId,
+          currentDate: currentDate.toISOString(),
+          hasInstance: !!instance,
+          instancePatternId: instance?.patternId,
+          patternId: pattern?.id,
+          patternCycleLength: pattern?.cycleLength,
+          sequenceLength: sequence?.length,
+          positionInCycle,
+          shiftTypeId,
+          sequenceSample: sequence?.slice(0, 10),
+          sequenceFull: sequence, // Полный sequence для отладки
+        });
+      }
 
       // Если shiftTypeId не null, создаем смену
       if (shiftTypeId) {
@@ -424,13 +729,43 @@ export async function generateShiftsFromProfile(
   });
   
   // Диагностика: первые 5 записей для проверки
-  console.info('[generateShifts] to upsert', {
+  logger.info('[generateShiftsFromProfile] Shifts prepared for upsert', {
     scheduleId,
-    total: shifts.length,
-    sample: shifts.slice(0, 5).map((s) => ({ employeeId: s.employeeId, date: s.date.toISOString(), shiftTypeId: s.shiftTypeId })),
+    shiftProfileId,
+    totalShifts: shifts.length,
+    sampleShifts: shifts.slice(0, 5).map((s) => ({ 
+      employeeId: s.employeeId, 
+      date: s.date.toISOString(), 
+      shiftTypeId: s.shiftTypeId 
+    })),
+  });
+
+  if (shifts.length === 0) {
+    logger.warn('[generateShiftsFromProfile] No shifts to create', {
+      scheduleId,
+      shiftProfileId,
+      employeesCount: employeesToProcess.length,
+      periodDays: periodDays.length,
+      note: 'This might indicate a problem with pattern generation',
+    });
+    return {
+      count: 0,
+      shifts: [],
+    };
+  }
+
+  logger.info('[generateShiftsFromProfile] Calling bulkCreateShifts', {
+    scheduleId,
+    shiftsCount: shifts.length,
   });
 
   const count = await bulkCreateShifts(scheduleId, shifts);
+
+  logger.info('[generateShiftsFromProfile] bulkCreateShifts completed', {
+    scheduleId,
+    requestedCount: shifts.length,
+    savedCount: count,
+  });
 
   // Обновляем shiftProfileId у сотрудников после успешной генерации
   await prisma.employee.updateMany({
@@ -443,11 +778,30 @@ export async function generateShiftsFromProfile(
     },
   });
 
-  // При генерации смен сбрасываем смещение паттерна к 0
-  // Смещение применяется только через кнопки в ростере (updatePatternOffset)
-  await prisma.schedule.update({
+  // ВАЖНО: НЕ сбрасываем patternStartOffset при генерации смен!
+  // patternStartOffset используется для отображения в UI (1/10, 2/10 и т.д.)
+  // Сброс происходит только при первой генерации или явном сбросе через UI
+  // При перегенерации после перемотки patternStartOffset должен сохраняться
+  const scheduleCurrent = await prisma.schedule.findUnique({
     where: { id: scheduleId },
-    data: { patternStartOffset: 0 },
+    select: { patternStartOffset: true },
+  });
+  
+  logger.info('[generateShiftsFromProfile] PatternStartOffset status', {
+    scheduleId,
+    currentPatternStartOffset: scheduleCurrent?.patternStartOffset ?? 0,
+    note: 'patternStartOffset is NOT reset - it preserves the current offset for UI display',
+    shiftsGenerated: count,
+  });
+  
+  // НЕ обновляем patternStartOffset - он сохраняет текущее значение для отображения в UI
+
+  // ВАЖНО: Обновление snapshot уже выполнено в bulkCreateShifts синхронно
+  // Здесь не нужно вызывать syncRosterSnapshot повторно, чтобы избежать дублирования
+  logger.info('[generateShiftsFromProfile] Shift generation completed', {
+    scheduleId,
+    shiftsGenerated: count,
+    note: 'Roster snapshot was updated synchronously in bulkCreateShifts',
   });
 
   return {
@@ -1214,15 +1568,41 @@ export async function updatePatternOffset(
   scheduleId: string,
   offsetDelta: number
 ): Promise<void> {
+  logger.info('[updatePatternOffset] START', {
+    scheduleId,
+    offsetDelta,
+    timestamp: new Date().toISOString(),
+  });
+
   // Получаем все экземпляры паттернов для расписания
   const instances = await prisma.rosterPatternInstance.findMany({
     where: { scheduleId },
     include: {
       pattern: true,
+      employee: {
+        select: {
+          id: true,
+          fullName: true,
+        },
+      },
     },
   });
 
+  logger.info('[updatePatternOffset] Found instances', {
+    scheduleId,
+    instancesCount: instances.length,
+    instances: instances.map(inst => ({
+      instanceId: inst.id,
+      employeeId: inst.employeeId,
+      employeeName: inst.employee?.fullName,
+      currentStartIndex: inst.startIndex,
+      patternId: inst.patternId,
+      patternCycleLength: inst.pattern?.cycleLength,
+    })),
+  });
+
   if (instances.length === 0) {
+    logger.warn('[updatePatternOffset] No instances found, exiting', { scheduleId });
     return;
   }
 
@@ -1232,28 +1612,85 @@ export async function updatePatternOffset(
     select: { patternStartOffset: true },
   });
 
-  const currentOffset = schedule?.patternStartOffset ?? 0;
+  if (!schedule) {
+    logger.error('[updatePatternOffset] Schedule not found', { scheduleId });
+    throw new Error('Schedule not found');
+  }
+
+  const currentOffset = schedule.patternStartOffset ?? 0;
+  
+  // ВАЖНО: patternStartOffset должен быть синхронизирован с реальными startIndex экземпляров
+  // Если они не совпадают, используем среднее значение startIndex для синхронизации
+  const avgStartIndex = instances.length > 0 
+    ? Math.round(instances.reduce((sum, inst) => sum + (inst.startIndex || 0), 0) / instances.length)
+    : 0;
+  
+  logger.info('[updatePatternOffset] Synchronization check', {
+    scheduleId,
+    currentPatternStartOffset: currentOffset,
+    averageStartIndex: avgStartIndex,
+    note: 'If these differ significantly, there may be a synchronization issue',
+  });
+  
   const newOffset = Math.max(0, currentOffset + offsetDelta);
 
+  logger.info('[updatePatternOffset] Offset calculation', {
+    scheduleId,
+    currentPatternStartOffset: currentOffset,
+    offsetDelta,
+    calculatedNewOffset: currentOffset + offsetDelta,
+    finalNewOffset: newOffset,
+  });
+
   // Обновляем startIndex для каждого экземпляра с учетом длины цикла
+  // Это сохраняет относительные смещения между сотрудниками
   const updates = instances.map((instance) => {
     if (!instance.pattern) {
+      logger.warn('[updatePatternOffset] Instance without pattern', {
+        instanceId: instance.id,
+        employeeId: instance.employeeId,
+      });
       return null;
     }
 
     const cycleLength = instance.pattern.cycleLength;
+    const oldStartIndex = instance.startIndex;
+    
     // Вычисляем новый startIndex с учетом циклического перехода
-    // Если offsetDelta отрицательный (смещение влево), переходим к концу цикла
-    let newStartIndex = (instance.startIndex + offsetDelta) % cycleLength;
-    if (newStartIndex < 0) {
-      newStartIndex = cycleLength + newStartIndex;
+    // Используем текущий startIndex + offsetDelta для сохранения относительных смещений
+    // ВАЖНО: Правильный расчет циклического перехода
+    let newStartIndex = oldStartIndex + offsetDelta;
+    
+    // Нормализуем к диапазону [0, cycleLength)
+    while (newStartIndex < 0) {
+      newStartIndex += cycleLength;
     }
+    newStartIndex = newStartIndex % cycleLength;
+
+    // Логируем ВСЕ расчеты для отслеживания проблем при множественных шагах
+    logger.info('[updatePatternOffset] Instance update calculation', {
+      instanceId: instance.id,
+      employeeId: instance.employeeId,
+      employeeName: instance.employee?.fullName,
+      cycleLength,
+      oldStartIndex,
+      offsetDelta,
+      rawCalculation: oldStartIndex + offsetDelta,
+      normalizedNewStartIndex: newStartIndex,
+      verification: `(${oldStartIndex} + ${offsetDelta}) % ${cycleLength} = ${newStartIndex}`,
+    });
 
     return prisma.rosterPatternInstance.update({
       where: { id: instance.id },
       data: { startIndex: newStartIndex },
     });
   }).filter((update): update is NonNullable<typeof update> => update !== null);
+
+  logger.info('[updatePatternOffset] Executing transaction', {
+    scheduleId,
+    updatesCount: updates.length,
+    newPatternStartOffset: newOffset,
+  });
 
   // Обновляем patternStartOffset в расписании и экземпляры в одной транзакции
   await prisma.$transaction([
@@ -1263,6 +1700,56 @@ export async function updatePatternOffset(
       data: { patternStartOffset: newOffset },
     }),
   ]);
+
+  // ВАЖНО: Обновляем снимок ростера после смещения паттернов
+  // Это обеспечивает синхронизацию с VacationMode
+  try {
+    logger.info('[updatePatternOffset] Updating roster snapshot after pattern offset change', {
+      scheduleId,
+      offsetDelta,
+      newPatternStartOffset: newOffset,
+    });
+    await rosterSnapshotService.syncRosterSnapshot(scheduleId);
+    logger.info('[updatePatternOffset] Roster snapshot updated successfully', {
+      scheduleId,
+    });
+  } catch (error) {
+    logger.error('[updatePatternOffset] Error updating roster snapshot', {
+      scheduleId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    // Не прерываем выполнение, если обновление снимка не удалось
+  }
+
+  // После обновления проверяем, что все startIndex обновлены правильно
+  const updatedInstances = await prisma.rosterPatternInstance.findMany({
+    where: { scheduleId },
+    include: {
+      pattern: true,
+      employee: {
+        select: {
+          id: true,
+          fullName: true,
+        },
+      },
+    },
+  });
+
+  logger.info('[updatePatternOffset] SUCCESS - Verification', {
+    scheduleId,
+    offsetDelta,
+    oldPatternStartOffset: currentOffset,
+    newPatternStartOffset: newOffset,
+    updatedInstancesCount: updates.length,
+    verification: updatedInstances.map(inst => ({
+      employeeId: inst.employeeId,
+      employeeName: inst.employee?.fullName,
+      finalStartIndex: inst.startIndex,
+      cycleLength: inst.pattern?.cycleLength,
+      isValid: inst.startIndex >= 0 && inst.startIndex < (inst.pattern?.cycleLength || 0),
+    })),
+    timestamp: new Date().toISOString(),
+  });
 }
 
 /**
@@ -1307,5 +1794,28 @@ export async function updateEmployeePatternOffset(
     where: { id: instance.id },
     data: { startIndex: newStartIndex },
   });
+
+  // ВАЖНО: Обновляем снимок ростера после смещения паттерна сотрудника
+  // Это обеспечивает синхронизацию с VacationMode
+  try {
+    logger.info('[updateEmployeePatternOffset] Updating roster snapshot after employee pattern offset change', {
+      scheduleId,
+      employeeId,
+      offsetDelta,
+      newStartIndex,
+    });
+    await rosterSnapshotService.syncRosterSnapshot(scheduleId);
+    logger.info('[updateEmployeePatternOffset] Roster snapshot updated successfully', {
+      scheduleId,
+      employeeId,
+    });
+  } catch (error) {
+    logger.error('[updateEmployeePatternOffset] Error updating roster snapshot', {
+      scheduleId,
+      employeeId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    // Не прерываем выполнение, если обновление снимка не удалось
+  }
 }
 

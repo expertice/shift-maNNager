@@ -2,7 +2,7 @@ import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query';
 import { MainLayout, SidebarIcons } from '@components/layout';
-import { Spinner, Card, Button, Badge } from '@components/common';
+import { Spinner, Card, Button, Badge, Modal } from '@components/common';
 import { schedulesService, shiftsService, employeesService, patternInstancesService, shiftProfilesService, positionsService } from '@services/api';
 import type { RosterPatternInstanceDTO } from '@services/api/patternInstancesService';
 import { useRealtime } from '@hooks/useRealtime';
@@ -19,6 +19,7 @@ import { splitPeriodByMonths, maxDaysAcrossMonths, getSlotStatus } from '@/utils
 import LaborViolationsModal from '@components/schedules/LaborViolationsModal';
 import LaborLawSettingsModal from '@components/labor/LaborLawSettingsModal';
 import { EmployeeStatistics } from '@components/schedules/EmployeeStatistics';
+import { getViolationStats } from '@services/api/laborLawComplianceApi';
 
 /**
  * Основная страница редактирования расписания
@@ -35,9 +36,12 @@ export default function MainSchedule() {
   const [isLaborViolationsModalOpen, setIsLaborViolationsModalOpen] = useState<boolean>(false);
   const [isLaborSettingsOpen, setIsLaborSettingsOpen] = useState<boolean>(false);
   const [isAddEmployeeModalOpen, setIsAddEmployeeModalOpen] = useState(false);
+  const [isHelpOpen, setIsHelpOpen] = useState(false);
   const [hoveredEmployeeId, setHoveredEmployeeId] = useState<string | null>(null);
   // Храним предыдущее состояние сотрудников для определения, кто стал видимым
   const prevEmployeesRef = useRef<Map<string, boolean>>(new Map());
+  // Защита от множественных одновременных вызовов перемотки паттернов
+  const patternOffsetChangeRef = useRef<Promise<void> | null>(null);
 
   if (!scheduleId) {
     return <div>Ошибка: не указан ID расписания</div>;
@@ -272,6 +276,14 @@ export default function MainSchedule() {
     refetchInterval: 30000, // Обновляем каждые 30 секунд
   });
 
+  // Загрузка статистики нарушений ТК РФ (для badge)
+  const { data: violationStats } = useQuery({
+    queryKey: ['violation-stats', scheduleId],
+    queryFn: () => getViolationStats(scheduleId!),
+    enabled: !!scheduleId,
+    refetchInterval: 60000, // Обновляем каждую минуту
+  });
+
 
   // Real-time обновления
   useRealtime(scheduleId, (event) => {
@@ -279,6 +291,8 @@ export default function MainSchedule() {
     refetchShifts();
     queryClient.invalidateQueries({ queryKey: ['shifts', scheduleId] });
     queryClient.invalidateQueries({ queryKey: ['shift-swaps', scheduleId] });
+    queryClient.invalidateQueries({ queryKey: ['violation-stats', scheduleId] });
+    queryClient.invalidateQueries({ queryKey: ['roster-snapshot', scheduleId] });
   });
 
   // Мутация для создания сотрудника
@@ -288,6 +302,7 @@ export default function MainSchedule() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['employees', scheduleId] });
+      queryClient.invalidateQueries({ queryKey: ['roster-snapshot', scheduleId] });
       setEditingEmployeeId(null);
     },
   });
@@ -312,6 +327,7 @@ export default function MainSchedule() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['employees', scheduleId] });
       queryClient.invalidateQueries({ queryKey: ['shifts', scheduleId] });
+      queryClient.invalidateQueries({ queryKey: ['roster-snapshot', scheduleId] });
     },
   });
 
@@ -323,6 +339,7 @@ export default function MainSchedule() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['employees', scheduleId] });
+      queryClient.invalidateQueries({ queryKey: ['roster-snapshot', scheduleId] });
       setEditingEmployeeId(null);
     },
   });
@@ -332,6 +349,7 @@ export default function MainSchedule() {
     mutationFn: (employeeId: string) => employeesService.deleteEmployee(scheduleId, employeeId),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['employees', scheduleId] });
+      queryClient.invalidateQueries({ queryKey: ['roster-snapshot', scheduleId] });
     },
   });
 
@@ -340,6 +358,7 @@ export default function MainSchedule() {
     mutationFn: (employeeId: string) => employeesService.cloneEmployee(scheduleId, employeeId),
     onSuccess: (newEmployee) => {
       queryClient.invalidateQueries({ queryKey: ['employees', scheduleId] });
+      queryClient.invalidateQueries({ queryKey: ['roster-snapshot', scheduleId] });
       // Добавляем нового сотрудника в конец списка
       if (newEmployee) {
         setEmployeeOrder(prev => [...prev, newEmployee.id]);
@@ -347,51 +366,51 @@ export default function MainSchedule() {
     },
   });
 
-  // Функция обновления смещения паттерна с перегенерацией смен
+  // Функция обновления смещения паттерна
+  // ВАЖНО: НЕ перегенерируем все смены сразу - это слишком долго для года!
+  // Обновляем только startIndex в экземплярах, смены перегенерируются при следующем просмотре
   const handlePatternOffsetChange = async (offsetDelta: number) => {
     if (!schedule || !employees) return;
+    
+    // Защита от множественных одновременных вызовов
+    if (patternOffsetChangeRef.current) {
+      console.log('[handlePatternOffsetChange] Already in progress, skipping duplicate call...');
+      return;
+    }
 
     try {
-      // Обновляем смещение в экземплярах паттернов (включая patternStartOffset в расписании)
-      await shiftProfilesService.updatePatternOffset(scheduleId, offsetDelta);
+      console.log('[handlePatternOffsetChange] START', { scheduleId, offsetDelta });
       
-      // Группируем сотрудников по профилям
-      const employeesByProfile = new Map<string, string[]>();
-      employees.forEach((emp) => {
-        if (emp.shiftProfileId) {
-          const profileId = emp.shiftProfileId;
-          if (!employeesByProfile.has(profileId)) {
-            employeesByProfile.set(profileId, []);
-          }
-          employeesByProfile.get(profileId)!.push(emp.id);
-        }
-      });
-
-      // Перегенерируем смены для каждого профиля
-      const startDate = new Date(schedule.startDate);
-      const endDate = new Date(schedule.endDate);
+      // Создаем промис для отслеживания выполнения
+      const updatePromise = (async () => {
+        // Обновляем смещение в экземплярах паттернов (включая patternStartOffset в расписании)
+        // Это обновляет startIndex для всех экземпляров
+        await shiftProfilesService.updatePatternOffset(scheduleId, offsetDelta);
+        
+        // Обновляем кэш для немедленного отображения изменений
+        queryClient.invalidateQueries({ queryKey: ['schedule', scheduleId] });
+        queryClient.invalidateQueries({ queryKey: ['patternInstances', scheduleId] });
+        queryClient.invalidateQueries({ queryKey: ['roster-snapshot', scheduleId] });
+        
+        // ВАЖНО: НЕ перегенерируем все смены сразу - это слишком долго!
+        // Вместо этого инвалидируем кэш смен, чтобы они перезагрузились при следующем просмотре
+        // Смены будут использовать обновленный startIndex при следующей генерации
+        queryClient.invalidateQueries({ queryKey: ['shifts', scheduleId] });
+        
+        console.log('[handlePatternOffsetChange] SUCCESS - startIndex updated, shifts cache invalidated', { 
+          scheduleId, 
+          offsetDelta,
+          note: 'Shifts will use updated startIndex on next generation or view',
+        });
+      })();
       
-      for (const [profileId, employeeIds] of employeesByProfile.entries()) {
-        try {
-          await shiftProfilesService.generateShifts({
-            scheduleId,
-            shiftProfileId: profileId,
-            employeeIds,
-            startDate,
-            endDate,
-          });
-        } catch (error) {
-          console.error(`Error regenerating shifts for profile ${profileId}:`, error);
-        }
-      }
-
-      // Обновляем кэш
-      queryClient.invalidateQueries({ queryKey: ['schedule', scheduleId] });
-      queryClient.invalidateQueries({ queryKey: ['shifts', scheduleId] });
-      queryClient.invalidateQueries({ queryKey: ['patternInstances', scheduleId] });
+      patternOffsetChangeRef.current = updatePromise;
+      await updatePromise;
     } catch (error) {
-      console.error('Error updating pattern offset:', error);
+      console.error('[handlePatternOffsetChange] ERROR', error);
       alert('Ошибка обновления смещения паттерна');
+    } finally {
+      patternOffsetChangeRef.current = null;
     }
   };
 
@@ -472,6 +491,7 @@ export default function MainSchedule() {
       await shiftProfilesService.updateEmployeePatternOffset(scheduleId, employeeId, offsetDelta);
       queryClient.invalidateQueries({ queryKey: ['patternInstances', scheduleId] });
       queryClient.invalidateQueries({ queryKey: ['shifts', scheduleId] });
+      queryClient.invalidateQueries({ queryKey: ['roster-snapshot', scheduleId] });
     } catch (error: any) {
       console.error('Error updating employee pattern offset:', error);
       alert(`Ошибка обновления смещения паттерна: ${error.response?.data?.message || error.message}`);
@@ -685,20 +705,32 @@ export default function MainSchedule() {
                 <div>
                   <div className="flex items-center space-x-3">
                   <h1 className="text-3xl font-bold">{schedule.name}</h1>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => setIsLaborSettingsOpen(true)}
+                    <button
+                      onClick={() => setIsHelpOpen(true)}
+                      className="p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-full transition-colors"
+                      title="Помощь"
                     >
-                      Настройки ТК РФ
-                    </Button>
+                      <svg
+                        className="w-5 h-5"
+                        fill="none"
+                        stroke="currentColor"
+                        viewBox="0 0 24 24"
+                        xmlns="http://www.w3.org/2000/svg"
+                      >
+                        <path
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          strokeWidth={2}
+                          d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
+                        />
+                      </svg>
+                    </button>
                   </div>
                 </div>
                 <div className="flex items-center space-x-2">
-                  <Button
-                    variant="outline"
-                    size="sm"
+                  <button
                     onClick={() => setIsEditPeriodModalOpen(true)}
+                    className="h-9 px-3 rounded-lg border-2 border-primary text-primary hover:bg-primary hover:text-white transition-colors text-sm font-medium flex items-center"
                   >
                     {schedule && (
                       <>
@@ -706,29 +738,86 @@ export default function MainSchedule() {
                         {format(new Date(schedule.endDate), 'dd MMMM yyyy', { locale: ru })}
                       </>
                     )}
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
+                  </button>
+                  {/* Настройки ТК РФ */}
+                  <button
                     onClick={() => setIsLaborSettingsOpen(true)}
+                    className="relative h-9 w-9 flex items-center justify-center rounded-lg border-2 border-primary text-primary hover:bg-primary hover:text-white transition-colors"
+                    title="Настройки ТК РФ"
                   >
-                    Настройки ТК РФ
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => setIsLaborViolationsModalOpen(true)}
-                  >
-                    Проверка ТК РФ
-                  </Button>
-                  <div className="relative">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => setIsSwapRequestsModalOpen(true)}
+                    <svg
+                      className="w-5 h-5"
+                      fill="none"
+                      stroke="currentColor"
+                      viewBox="0 0 24 24"
                     >
-                      Запросы на обмен
-                    </Button>
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth={2}
+                        d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"
+                      />
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth={2}
+                        d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"
+                      />
+                    </svg>
+                  </button>
+
+                  {/* Проверка ТК РФ */}
+                  <div className="relative">
+                    <button
+                      onClick={() => setIsLaborViolationsModalOpen(true)}
+                      className="relative h-9 w-9 flex items-center justify-center rounded-lg border-2 border-primary text-primary hover:bg-primary hover:text-white transition-colors"
+                      title="Проверка ТК РФ"
+                    >
+                      <svg
+                        className="w-5 h-5"
+                        fill="none"
+                        stroke="currentColor"
+                        viewBox="0 0 24 24"
+                      >
+                        <path
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          strokeWidth={2}
+                          d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"
+                        />
+                      </svg>
+                    </button>
+                    {violationStats && violationStats.unresolved > 0 && (
+                      <Badge
+                        variant="danger"
+                        className="absolute -top-2 -right-2"
+                      >
+                        {violationStats.unresolved}
+                      </Badge>
+                    )}
+                  </div>
+
+                  {/* Запросы на обмен */}
+                  <div className="relative">
+                    <button
+                      onClick={() => setIsSwapRequestsModalOpen(true)}
+                      className="relative h-9 w-9 flex items-center justify-center rounded-lg border-2 border-primary text-primary hover:bg-primary hover:text-white transition-colors"
+                      title="Запросы на обмен"
+                    >
+                      <svg
+                        className="w-5 h-5"
+                        fill="none"
+                        stroke="currentColor"
+                        viewBox="0 0 24 24"
+                      >
+                        <path
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          strokeWidth={2}
+                          d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
+                        />
+                      </svg>
+                    </button>
                     {pendingSwapRequests && pendingSwapRequests.length > 0 && (
                       <Badge
                         variant="danger"
@@ -1018,17 +1107,40 @@ export default function MainSchedule() {
                         // Сервер использует upsert, поэтому просто создаем/обновляем
                         if (existingShift && existingShift.id) {
                           // Обновляем существующую смену и помечаем как 'modified'
-                          await shiftsService.updateShift(scheduleId, existingShift.id, {
+                          console.log('[MainSchedule] Updating shift in DB', {
+                            scheduleId,
+                            shiftId: existingShift.id,
+                            employeeId,
+                            date: dateISO,
+                            shiftTypeId,
+                          });
+                          const updatedShift = await shiftsService.updateShift(scheduleId, existingShift.id, {
                             shiftTypeId,
                             status: 'modified',
+                          });
+                          console.log('[MainSchedule] Shift updated in DB', {
+                            shiftId: updatedShift.id,
+                            employeeId,
+                            date: dateISO,
                           });
                         } else {
                           // Если смены нет в кэше, создаём новую (сервер использует upsert)
                           // Сервер сам обработает случай, если смена уже существует
-                          await shiftsService.createShift(scheduleId, {
+                          console.log('[MainSchedule] Creating shift in DB', {
+                            scheduleId,
                             employeeId,
                             date: dateISO,
                             shiftTypeId,
+                          });
+                          const createdShift = await shiftsService.createShift(scheduleId, {
+                            employeeId,
+                            date: dateISO,
+                            shiftTypeId,
+                          });
+                          console.log('[MainSchedule] Shift created in DB', {
+                            shiftId: createdShift.id,
+                            employeeId,
+                            date: dateISO,
                           });
                         }
                       }
@@ -1036,6 +1148,10 @@ export default function MainSchedule() {
                     // Обновляем кэш смен после успешного сохранения
                     await refetchShifts();
                     queryClient.invalidateQueries({ queryKey: ['shifts', scheduleId] });
+                    
+                    // ВАЖНО: Обновляем снимок ростера при изменении смен
+                    // Это обеспечивает синхронизацию с VacationMode
+                    queryClient.invalidateQueries({ queryKey: ['roster-snapshot', scheduleId] });
                     
                     // Очищаем оптимистичные обновления после успешного сохранения
                     // (они будут заменены реальными данными из refetchShifts)
@@ -1265,6 +1381,46 @@ export default function MainSchedule() {
           isOpen={isLaborSettingsOpen}
           onClose={() => setIsLaborSettingsOpen(false)}
         />
+
+        {/* Модальное окно помощи */}
+        <Modal
+          isOpen={isHelpOpen}
+          onClose={() => setIsHelpOpen(false)}
+          title="Помощь по разделу 'Ростер'"
+          size="lg"
+        >
+          <div className="space-y-4">
+            <div>
+              <h3 className="text-lg font-semibold mb-2">Как назначить смену</h3>
+              <ul className="list-disc list-inside space-y-1 text-gray-700">
+                <li>Кликните на ячейку в календаре для выбранного сотрудника и даты.</li>
+                <li>Выберите тип смены из появившегося меню.</li>
+                <li>Смена будет назначена автоматически.</li>
+              </ul>
+            </div>
+            <div>
+              <h3 className="text-lg font-semibold mb-2">Как удалить смену</h3>
+              <p className="text-gray-700">
+                Кликните на ячейку с назначенной сменой и выберите "Удалить" или "Очистить" в меню.
+              </p>
+            </div>
+            <div>
+              <h3 className="text-lg font-semibold mb-2">Визуальные обозначения</h3>
+              <ul className="list-disc list-inside space-y-1 text-gray-700">
+                <li>Цветные ячейки - назначенные смены</li>
+                <li>Буквы в ячейках - сокращенное название типа смены</li>
+                <li>👑 - день рождения сотрудника</li>
+                <li>Серые ячейки - выходные дни или неактивные периоды</li>
+              </ul>
+            </div>
+            <div>
+              <h3 className="text-lg font-semibold mb-2">Настройки</h3>
+              <p className="text-gray-700">
+                В настройках можно изменить период расписания, настроить параметры контроля Трудового кодекса РФ, проверить нарушения и управлять запросами на обмен сменами.
+              </p>
+            </div>
+          </div>
+        </Modal>
       </div>
     </MainLayout>
   );

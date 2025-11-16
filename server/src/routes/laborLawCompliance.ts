@@ -8,6 +8,7 @@ import {
   updateSettingsController,
   getAllWorkHoursNorms,
   getWorkHoursNormByYear,
+  getMonthlyHoursNormsController,
   updateWorkHoursNormController,
   syncWorkHoursNorm,
   calculateWorkHoursNormController,
@@ -30,6 +31,7 @@ router.put('/settings', updateSettingsController);
 // Нормы часов
 router.get('/work-hours-norms', getAllWorkHoursNorms);
 router.get('/work-hours-norms/:year', getWorkHoursNormByYear);
+router.get('/work-hours-norms/:year/monthly', getMonthlyHoursNormsController);
 router.put('/work-hours-norms/:year', updateWorkHoursNormController);
 router.post('/work-hours-norms/:year/sync', syncWorkHoursNorm);
 router.post('/work-hours-norms/:year/calculate', calculateWorkHoursNormController);

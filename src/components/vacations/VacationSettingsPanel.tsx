@@ -1,19 +1,22 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Button, Input, Card, Spinner } from '@components/common';
 import { Employee, VacationRules, EmployeeVacationAllocation } from '@types';
 import { vacationRulesService } from '@services/api/vacationRulesService';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { Save } from 'lucide-react';
 
 export interface VacationSettingsPanelProps {
   scheduleId: string;
   employees: Employee[];
   onClose?: () => void;
+  onSaveReady?: (handleSave: () => Promise<void>, isSaving: boolean) => void;
 }
 
 export default function VacationSettingsPanel({
   scheduleId,
   employees,
   onClose,
+  onSaveReady,
 }: VacationSettingsPanelProps) {
   const queryClient = useQueryClient();
   const currentYear = new Date().getFullYear();
@@ -79,41 +82,51 @@ export default function VacationSettingsPanel({
     },
   });
 
+  const isLoading = rulesLoading || allocationsLoading;
+  const isSaving = updateRulesMutation.isPending || updateAllocationsMutation.isPending;
+
+  // Используем ref для хранения актуальных значений
+  const rulesRef = useRef(rules);
+  const allocationsRef = useRef(allocations);
+  const employeesRef = useRef(employees);
+  
+  useEffect(() => {
+    rulesRef.current = rules;
+    allocationsRef.current = allocations;
+    employeesRef.current = employees;
+  }, [rules, allocations, employees]);
+
   // Обработка сохранения
-  const handleSave = async () => {
+  const handleSave = useCallback(async () => {
     try {
       // Сохраняем правила
       await updateRulesMutation.mutateAsync({
-        maxConcurrentEmployees: rules.maxConcurrentEmployees,
-        minContinuousDays: rules.minContinuousDays,
+        maxConcurrentEmployees: rulesRef.current.maxConcurrentEmployees,
+        minContinuousDays: rulesRef.current.minContinuousDays,
       });
 
       // Сохраняем выделения
-      const allocationsData = employees.map(emp => ({
+      const allocationsData = employeesRef.current.map(emp => ({
         employeeId: emp.id,
         year: currentYear,
-        allocatedDays: allocations[emp.id] || 0,
+        allocatedDays: allocationsRef.current[emp.id] ?? 28,
       }));
 
       await updateAllocationsMutation.mutateAsync(allocationsData);
     } catch (error) {
       console.error('Ошибка при сохранении настроек:', error);
     }
-  };
+  }, [currentYear, updateRulesMutation, updateAllocationsMutation]);
 
-  const isLoading = rulesLoading || allocationsLoading;
-  const isSaving = updateRulesMutation.isPending || updateAllocationsMutation.isPending;
+  // Передаем handleSave в родительский компонент через callback
+  useEffect(() => {
+    if (onSaveReady) {
+      onSaveReady(handleSave, isSaving);
+    }
+  }, [onSaveReady, handleSave, isSaving]);
 
   return (
     <Card className="p-6">
-      <div className="flex items-center justify-between mb-6">
-        <h2 className="text-2xl font-bold">Настройки отпусков</h2>
-        {onClose && (
-          <Button variant="outline" size="sm" onClick={onClose}>
-            Закрыть
-          </Button>
-        )}
-      </div>
 
       {isLoading ? (
         <div className="flex justify-center items-center py-12">
@@ -124,7 +137,7 @@ export default function VacationSettingsPanel({
           {/* Правила отпусков */}
           <div>
             <h3 className="text-lg font-semibold mb-4">Общие правила</h3>
-            <div className="space-y-4">
+            <div className="grid grid-cols-2 gap-4">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
                   Максимум одновременных отпусков
@@ -200,15 +213,16 @@ export default function VacationSettingsPanel({
                           <Input
                             type="number"
                             min="0"
-                            value={allocations[employee.id] || 0}
-                            onChange={(e) =>
+                            value={allocations[employee.id] ?? 28}
+                            onChange={(e) => {
+                              const value = e.target.value === '' ? undefined : parseInt(e.target.value, 10);
                               setAllocations({
                                 ...allocations,
-                                [employee.id]: parseInt(e.target.value, 10) || 0,
-                              })
-                            }
+                                [employee.id]: value ?? 28,
+                              });
+                            }}
                             className="w-24"
-                            placeholder="0"
+                            placeholder="28"
                           />
                         </td>
                       </tr>
@@ -217,17 +231,6 @@ export default function VacationSettingsPanel({
                 </table>
               </div>
             </div>
-          </div>
-
-          {/* Кнопка сохранения */}
-          <div className="flex justify-end">
-            <Button
-              onClick={handleSave}
-              disabled={isSaving}
-              isLoading={isSaving}
-            >
-              Сохранить настройки
-            </Button>
           </div>
         </div>
       )}

@@ -2,14 +2,21 @@ import React, { useState, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { MainLayout, SidebarIcons } from '@components/layout';
-import { Button, Spinner, Modal, Select } from '@components/common';
+import { Button, Spinner, Modal, Select, Badge } from '@components/common';
 import classNames from 'classnames';
 import { schedulesService, employeesService, shiftsService, vacationsService, shiftProfilesService } from '@services/api';
+import * as rosterSnapshotService from '@services/api/rosterSnapshotService';
 import { useRealtime } from '@hooks/useRealtime';
 import { Employee, Shift } from '@types';
-import { parseISO, startOfDay, endOfDay } from 'date-fns';
+import { parseISO, startOfDay, endOfDay, startOfMonth, endOfMonth } from 'date-fns';
+import { format } from 'date-fns';
+import { ru } from 'date-fns/locale';
+import { parseLocalDate } from '@/utils/dateUtils';
+import { splitPeriodByMonths } from '@/utils/rosterCalendar';
 import VacationScheduler from '@components/vacations/VacationScheduler';
 import VacationSettingsPanel from '@components/vacations/VacationSettingsPanel';
+import { Save, Trash2, Printer, Calendar, Grid3x3, GitCompare } from 'lucide-react';
+import RosterSyncComparisonModal from '@components/vacations/RosterSyncComparisonModal';
 
 /**
  * Страница режима отпусков
@@ -20,8 +27,13 @@ export default function VacationMode() {
   const queryClient = useQueryClient();
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isHelpOpen, setIsHelpOpen] = useState(false);
-  const [viewMode, setViewMode] = useState<'compact' | 'roster'>('compact');
+  const [isVacationsListOpen, setIsVacationsListOpen] = useState(false);
+  const [viewMode, setViewMode] = useState<'compact' | 'roster'>('roster'); // Режим ростера по умолчанию
   const [selectedEmployeeId, setSelectedEmployeeId] = useState<string>('');
+  const [handleSave, setHandleSave] = useState<(() => Promise<void>) | null>(null);
+  const [isSaving, setIsSaving] = useState(false);
+  const [employeeOrder, setEmployeeOrder] = useState<string[]>([]); // Порядок сотрудников для синхронизации с MainSchedule
+  const [isComparisonModalOpen, setIsComparisonModalOpen] = useState(false); // Состояние модального окна сравнения
 
   if (!scheduleId) {
     return <div>Ошибка: не указан ID расписания</div>;
@@ -32,6 +44,9 @@ export default function VacationMode() {
     queryKey: ['schedule', scheduleId],
     queryFn: () => schedulesService.getScheduleById(scheduleId),
     enabled: !!scheduleId,
+    staleTime: 0,
+    refetchOnMount: true,
+    refetchOnWindowFocus: true,
   });
 
   // Загрузка сотрудников
@@ -39,6 +54,9 @@ export default function VacationMode() {
     queryKey: ['employees', scheduleId],
     queryFn: () => employeesService.getEmployees(scheduleId),
     enabled: !!scheduleId,
+    staleTime: 0,
+    refetchOnMount: true,
+    refetchOnWindowFocus: true,
   });
 
   // Загрузка отпусков
@@ -46,10 +64,13 @@ export default function VacationMode() {
     queryKey: ['vacations', scheduleId],
     queryFn: () => vacationsService.getVacations(scheduleId),
     enabled: !!scheduleId,
+    staleTime: 0,
+    refetchOnMount: true,
+    refetchOnWindowFocus: true,
   });
 
   // Загрузка смен для отображения
-  const { data: shiftsData } = useQuery({
+  const { data: shiftsData, refetch: refetchShifts } = useQuery({
     queryKey: ['shifts', scheduleId, schedule?.startDate, schedule?.endDate],
     queryFn: () => {
       if (!schedule) return Promise.resolve({ items: [], total: 0, page: 1, pageSize: 0, totalPages: 0 });
@@ -71,6 +92,9 @@ export default function VacationMode() {
       });
     },
     enabled: !!scheduleId && !!schedule,
+    staleTime: 0, // Считаем данные устаревшими сразу для актуальности
+    refetchOnMount: true, // Обновлять при монтировании компонента
+    refetchOnWindowFocus: true, // Обновлять при возврате в окно
   });
 
   // Загрузка профилей смен для получения цветов
@@ -78,28 +102,114 @@ export default function VacationMode() {
     queryKey: ['shiftProfiles', scheduleId],
     queryFn: () => scheduleId ? shiftProfilesService.getShiftProfiles(scheduleId) : Promise.resolve([]),
     enabled: !!scheduleId,
+    staleTime: 0,
+    refetchOnMount: true,
+    refetchOnWindowFocus: true,
   });
 
-  // Real-time обновления
-  useRealtime(scheduleId, () => {
-    queryClient.invalidateQueries({ queryKey: ['vacations', scheduleId] });
-    queryClient.invalidateQueries({ queryKey: ['shifts', scheduleId] });
+  // Синхронизация снимка ростера при открытии страницы
+  // Это обеспечивает, что ростер отпусков ОДИН-В-ОДИН как ростер смен
+  const { data: rosterSnapshot, isLoading: snapshotLoading } = useQuery({
+    queryKey: ['roster-snapshot', scheduleId],
+    queryFn: async () => {
+      try {
+        // Сначала синхронизируем снимок с актуальными данными
+        await rosterSnapshotService.syncRosterSnapshot(scheduleId);
+        // Затем загружаем синхронизированный снимок
+        return await rosterSnapshotService.getRosterSnapshot(scheduleId);
+      } catch (error) {
+        console.error('Error syncing roster snapshot:', error);
+        // Если синхронизация не удалась, пытаемся просто загрузить существующий снимок
+        try {
+          return await rosterSnapshotService.getRosterSnapshot(scheduleId);
+        } catch {
+          return null;
+        }
+      }
+    },
+    enabled: !!scheduleId,
+    staleTime: 0,
+    refetchOnMount: true,
+    refetchOnWindowFocus: false, // Не обновляем при возврате в окно, только при монтировании
   });
+
+  // Real-time обновления - обновляем данные при изменениях в ростере смен
+  useRealtime(scheduleId, () => {
+    // Инвалидируем и обновляем смены
+    refetchShifts();
+    queryClient.invalidateQueries({ queryKey: ['shifts', scheduleId] });
+    queryClient.invalidateQueries({ queryKey: ['vacations', scheduleId] });
+    queryClient.invalidateQueries({ queryKey: ['employees', scheduleId] });
+    queryClient.invalidateQueries({ queryKey: ['roster-snapshot', scheduleId] });
+    queryClient.invalidateQueries({ queryKey: ['shiftProfiles', scheduleId] });
+    queryClient.invalidateQueries({ queryKey: ['patternInstances', scheduleId] });
+  });
+
 
   // Преобразуем смены в Map для быстрого доступа
+  // ВАЖНО: Используем смены из API (приоритет), чтобы всегда получать актуальные данные из БД
+  // Snapshot используется только как резервный источник
+  // ВАЖНО: Нормализуем даты через startOfDay и format для консистентности с VacationRosterView
   const shiftsByDateAndEmployee = useMemo(() => {
-    if (!shiftsData?.items) return new Map<string, Shift>();
-    
     const map = new Map<string, Shift>();
-    shiftsData.items.forEach(shift => {
-      const dateStr = typeof shift.date === 'string' 
-        ? shift.date.split('T')[0] 
-        : new Date(shift.date).toISOString().split('T')[0];
-      const key = `${dateStr}-${shift.employeeId}`;
-      map.set(key, shift);
-    });
+    
+    // Функция для нормализации даты - используем startOfDay для консистентности
+    const normalizeDate = (date: Date | string): string => {
+      const dateObj = typeof date === 'string' ? parseISO(date) : date;
+      return format(startOfDay(dateObj), 'yyyy-MM-dd');
+    };
+    
+    // Приоритет 1: Смены из API (актуальные данные из БД)
+    if (shiftsData?.items && shiftsData.items.length > 0) {
+      console.log('[VacationMode] Using shifts from API', {
+        shiftsCount: shiftsData.items.length,
+        note: 'Loading shifts directly from API for up-to-date data',
+        sampleShifts: shiftsData.items.slice(0, 3).map(s => ({
+          id: s.id,
+          employeeId: s.employeeId,
+          date: typeof s.date === 'string' ? s.date : s.date.toISOString(),
+          shiftTypeId: s.shiftTypeId,
+        })),
+      });
+      shiftsData.items.forEach(shift => {
+        const dateStr = normalizeDate(shift.date);
+        const key = `${dateStr}-${shift.employeeId}`;
+        map.set(key, shift);
+      });
+      console.log('[VacationMode] Shifts map created from API', {
+        mapSize: map.size,
+        sampleKeys: Array.from(map.keys()).slice(0, 5),
+      });
+      return map;
+    }
+    
+    // Приоритет 2: Смены из snapshot (резервный источник, если API не вернул данные)
+    if (rosterSnapshot?.shifts && Array.isArray(rosterSnapshot.shifts) && rosterSnapshot.shifts.length > 0) {
+      console.log('[VacationMode] Using shifts from roster snapshot (fallback)', {
+        shiftsCount: rosterSnapshot.shifts.length,
+        note: 'API returned no shifts, using snapshot as fallback',
+      });
+      rosterSnapshot.shifts.forEach((shift: any) => {
+        const dateStr = normalizeDate(shift.date);
+        const key = `${dateStr}-${shift.employeeId}`;
+        map.set(key, shift as Shift);
+      });
+      console.log('[VacationMode] Shifts map created from snapshot', {
+        mapSize: map.size,
+        sampleKeys: Array.from(map.keys()).slice(0, 5),
+      });
+    } else {
+      console.log('[VacationMode] No shifts available', {
+        hasSnapshot: !!rosterSnapshot,
+        hasSnapshotShifts: !!(rosterSnapshot?.shifts && Array.isArray(rosterSnapshot.shifts)),
+        snapshotShiftsCount: Array.isArray(rosterSnapshot?.shifts) ? rosterSnapshot.shifts.length : 0,
+        hasShiftsData: !!shiftsData,
+        shiftsDataItemsCount: shiftsData?.items?.length || 0,
+      });
+    }
+    
     return map;
-  }, [shiftsData]);
+  }, [rosterSnapshot, shiftsData]);
 
   // Получаем все типы смен из профилей
   const shiftTypes = useMemo(() => {
@@ -130,13 +240,66 @@ export default function VacationMode() {
     return endOfDay(date);
   }, [schedule]);
 
-  const isLoading = scheduleLoading || employeesLoading || vacationsLoading;
+  const isLoading = scheduleLoading || employeesLoading || vacationsLoading || snapshotLoading;
 
-  // Фильтруем только видимых сотрудников
+  // Загружаем порядок сотрудников из снимка ростера (приоритет) или localStorage
+  // Это обеспечивает синхронизацию с MainSchedule - ростер отпусков ОДИН-В-ОДИН как ростер смен
+  React.useEffect(() => {
+    if (employees && employees.length > 0 && scheduleId) {
+      const employeeIds = new Set(employees.map(emp => emp.id));
+      
+      // Приоритет 1: Порядок из снимка ростера (самый актуальный из БД)
+      if (rosterSnapshot?.employeeOrder && Array.isArray(rosterSnapshot.employeeOrder) && rosterSnapshot.employeeOrder.length > 0) {
+        const validOrder = rosterSnapshot.employeeOrder.filter(id => employeeIds.has(id));
+        if (validOrder.length > 0) {
+          setEmployeeOrder(validOrder);
+          return;
+        }
+      }
+      
+      // Приоритет 2: Порядок из localStorage (резервный)
+      const savedOrder = localStorage.getItem(`employeeOrder_${scheduleId}`);
+      if (savedOrder) {
+        try {
+          const parsedOrder = JSON.parse(savedOrder);
+          if (Array.isArray(parsedOrder) && parsedOrder.length > 0) {
+            const validOrder = parsedOrder.filter(id => employeeIds.has(id));
+            if (validOrder.length > 0) {
+              setEmployeeOrder(validOrder);
+              return;
+            }
+          }
+        } catch (error) {
+          console.error('Error parsing saved employee order:', error);
+        }
+      }
+      
+      // Приоритет 3: Если порядка нет, используем порядок из массива employees
+      setEmployeeOrder(employees.map(emp => emp.id));
+    }
+  }, [employees, scheduleId, rosterSnapshot]);
+
+  // Фильтруем только видимых сотрудников и сортируем по порядку из MainSchedule
   const visibleEmployees = useMemo(() => {
     if (!employees) return [];
-    return employees.filter(emp => !emp.isHidden);
-  }, [employees]);
+    const visible = employees.filter(emp => !emp.isHidden);
+    
+    // Если есть порядок сотрудников, применяем его
+    if (employeeOrder.length > 0) {
+      const orderMap = new Map(employeeOrder.map((id, index) => [id, index]));
+      const sorted = [...visible].sort((a, b) => {
+        const aIndex = orderMap.get(a.id) ?? Infinity;
+        const bIndex = orderMap.get(b.id) ?? Infinity;
+        return aIndex - bIndex;
+      });
+      
+      // Добавляем новых видимых сотрудников в конец
+      const newEmployees = visible.filter(emp => !orderMap.has(emp.id));
+      return [...sorted, ...newEmployees];
+    }
+    
+    return visible;
+  }, [employees, employeeOrder]);
 
   // Опции для выпадающего списка сотрудников
   const employeeOptions = useMemo(() => {
@@ -173,7 +336,61 @@ export default function VacationMode() {
         <div className="flex items-center justify-between mb-6">
           <div className="flex items-center gap-3">
             <h1 className="text-3xl font-bold">Режим отпусков</h1>
+            {/* Переключатель режимов просмотра */}
+            <div className="flex items-center gap-1 border border-gray-300 rounded-lg bg-white p-1">
+              <button
+                onClick={() => {
+                  setViewMode('compact');
+                  setSelectedEmployeeId('');
+                }}
+                className={`p-2 rounded transition-colors ${
+                  viewMode === 'compact'
+                    ? 'bg-primary text-white'
+                    : 'text-gray-600 hover:bg-gray-100'
+                }`}
+                title="Компактный календарь"
+              >
+                <Calendar className="w-5 h-5" />
+              </button>
+              <button
+                onClick={() => {
+                  setViewMode('roster');
+                  setSelectedEmployeeId('');
+                }}
+                className={`p-2 rounded transition-colors ${
+                  viewMode === 'roster'
+                    ? 'bg-primary text-white'
+                    : 'text-gray-600 hover:bg-gray-100'
+                }`}
+                title="Ростер"
+              >
+                <Grid3x3 className="w-5 h-5" />
+              </button>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            {/* Блок кнопок действий */}
+            {viewMode === 'compact' && (
+              <div className="w-48">
+                <Select
+                  value={selectedEmployeeId}
+                  onChange={(e) => {
+                    setSelectedEmployeeId(e.target.value);
+                  }}
+                  options={employeeOptions}
+                  placeholder="Сотрудник"
+                  className="border border-gray-300 focus:border-primary focus:ring-primary text-sm"
+                />
+              </div>
+            )}
             <div className="flex items-center gap-1">
+              <button
+                onClick={() => setIsComparisonModalOpen(true)}
+                className="p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-full transition-colors"
+                title="Проверить синхронность с ростером смен"
+              >
+                <GitCompare className="w-5 h-5" />
+              </button>
               <button
                 onClick={() => setIsHelpOpen(true)}
                 className="p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-full transition-colors"
@@ -193,6 +410,380 @@ export default function VacationMode() {
                     d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
                   />
                 </svg>
+              </button>
+              <button
+                onClick={() => setIsVacationsListOpen(true)}
+                className="p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-full transition-colors"
+                title="Список отпусков"
+              >
+                <svg
+                  className="w-5 h-5"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                  xmlns="http://www.w3.org/2000/svg"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"
+                  />
+                </svg>
+              </button>
+              <button
+                onClick={() => {
+                  if (!schedule || !employees || !vacations) {
+                    alert('Данные еще не загружены. Пожалуйста, подождите.');
+                    return;
+                  }
+
+                  // Фильтруем видимых сотрудников
+                  const visibleEmps = employees.filter(emp => !emp.isHidden);
+                  
+                  // Разбиваем период на месяцы
+                  const months = splitPeriodByMonths(scheduleStart, scheduleEnd);
+                  
+                  // Функция для получения смены
+                  const getShiftForDate = (date: Date, employeeId: string): Shift | null => {
+                    if (!shiftsByDateAndEmployee) return null;
+                    const dateStr = format(date, 'yyyy-MM-dd');
+                    const key = `${dateStr}-${employeeId}`;
+                    return shiftsByDateAndEmployee.get(key) || null;
+                  };
+                  
+                  // Функция для получения типа смены
+                  const getShiftType = (shift: Shift | null) => {
+                    if (!shift || !shift.shiftTypeId) return null;
+                    return shiftTypes.find(st => st.id === shift.shiftTypeId) || null;
+                  };
+                  
+                  // Создаем версию для печати
+                  const printWindow = window.open('', '_blank');
+                  if (!printWindow) {
+                    alert('Не удалось открыть окно для печати. Проверьте настройки блокировки всплывающих окон.');
+                    return;
+                  }
+
+                  // Генерируем страницы для каждого месяца
+                  const monthPages = months.map((monthSlice, monthIndex) => {
+                    const monthStart = startOfMonth(new Date(monthSlice.year, monthSlice.month, 1));
+                    const monthEnd = endOfMonth(monthStart);
+                    const daysInMonth = monthSlice.daysInMonth;
+                    
+                    // Определяем реальные границы месяца в рамках периода
+                    const actualStart = monthStart < scheduleStart ? scheduleStart : monthStart;
+                    const actualEnd = monthEnd > scheduleEnd ? scheduleEnd : monthEnd;
+                    
+                    // Генерируем заголовки дней для месяца
+                    const dayHeaders: string[] = [];
+                    for (let day = 1; day <= daysInMonth; day++) {
+                      const date = new Date(monthSlice.year, monthSlice.month, day);
+                      const dayOfWeek = date.getDay();
+                      const isWeekend = dayOfWeek === 0 || dayOfWeek === 6;
+                      const isInPeriod = date >= scheduleStart && date <= scheduleEnd;
+                      const weekday = ['ВС', 'ПН', 'ВТ', 'СР', 'ЧТ', 'ПТ', 'СБ'][dayOfWeek];
+                      
+                      dayHeaders.push(
+                        `<th class="${isWeekend ? 'weekend' : ''} ${!isInPeriod ? 'outside-period' : ''}">
+                          <div class="day-number">${day}</div>
+                          <div class="day-weekday">${weekday}</div>
+                        </th>`
+                      );
+                    }
+
+                    // Генерируем строки для сотрудников
+                    const employeeRows = visibleEmps.map(employee => {
+                      const employeeVacations = vacations.filter(v => v.employeeId === employee.id);
+                      const vacationDays = new Set<string>();
+                      employeeVacations.forEach(vacation => {
+                        const start = parseLocalDate(vacation.startDate);
+                        const end = parseLocalDate(vacation.endDate);
+                        const current = new Date(start);
+                        while (current <= end) {
+                          vacationDays.add(format(current, 'yyyy-MM-dd'));
+                          current.setDate(current.getDate() + 1);
+                        }
+                      });
+                      
+                      const days: string[] = [];
+                      for (let day = 1; day <= daysInMonth; day++) {
+                        const date = new Date(monthSlice.year, monthSlice.month, day);
+                        const dateStr = format(date, 'yyyy-MM-dd');
+                        const isVacation = vacationDays.has(dateStr);
+                        const dayOfWeek = date.getDay();
+                        const isWeekend = dayOfWeek === 0 || dayOfWeek === 6;
+                        const isInPeriod = date >= scheduleStart && date <= scheduleEnd;
+                        
+                        // Получаем смену, если нет отпуска
+                        let shiftContent = '';
+                        if (!isVacation && isInPeriod) {
+                          const shift = getShiftForDate(date, employee.id);
+                          const shiftType = getShiftType(shift);
+                          if (shiftType) {
+                            // Берем первую букву названия смены
+                            const shiftLetter = shiftType.name?.charAt(0).toUpperCase() || '';
+                            shiftContent = `<div class="shift-mark">${shiftLetter}</div>`;
+                          }
+                        }
+                        
+                        days.push(
+                          `<td class="${isVacation ? 'vacation-day' : isWeekend ? 'weekend' : ''} ${!isInPeriod ? 'outside-period' : ''}">
+                            ${isVacation ? '<div class="vacation-mark">О</div>' : shiftContent}
+                          </td>`
+                        );
+                      }
+                      
+                      // Формируем информацию о сотруднике с переносами
+                      const employeeInfo = [
+                        employee.fullName,
+                        employee.tabNumber ? `Т/Н: ${employee.tabNumber}` : '',
+                        employee.position?.name || ''
+                      ].filter(Boolean).join('<br>');
+                      
+                      return `
+                        <tr>
+                          <td class="employee-name">${employeeInfo}</td>
+                          ${days.join('')}
+                        </tr>
+                      `;
+                    }).join('');
+
+                    const monthName = format(monthStart, 'LLLL yyyy', { locale: ru });
+                    const isLastMonth = monthIndex === months.length - 1;
+
+                    return `
+                      <div class="month-page ${isLastMonth ? '' : 'page-break'}">
+                        <div class="month-header">
+                          <h2>Ростер отпусков</h2>
+                          <div class="month-title">${schedule.name || 'Расписание'} - ${monthName}</div>
+                        </div>
+                        <div class="table-container">
+                          <table>
+                            <thead>
+                              <tr>
+                                <th class="employee-name">Сотрудник</th>
+                                ${dayHeaders.join('')}
+                              </tr>
+                            </thead>
+                            <tbody>
+                              ${employeeRows}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    `;
+                  }).join('');
+
+                  // Получаем данные для печати
+                  const printContent = `
+                    <!DOCTYPE html>
+                    <html>
+                      <head>
+                        <meta charset="UTF-8">
+                        <title>Ростер отпусков - ${schedule.name || 'Расписание'}</title>
+                        <style>
+                          @media print {
+                            @page {
+                              size: A4 landscape;
+                              margin: 5mm;
+                            }
+                            body {
+                              margin: 0;
+                              padding: 0;
+                              font-family: Arial, sans-serif;
+                            }
+                            .page-break {
+                              page-break-after: always;
+                            }
+                            .month-page {
+                              width: 100%;
+                              height: 100%;
+                              display: flex;
+                              flex-direction: column;
+                              overflow: hidden;
+                              padding: 0;
+                            }
+                            .month-header {
+                              flex-shrink: 0;
+                              margin-bottom: 5mm;
+                            }
+                            .table-container {
+                              flex: 1;
+                              overflow: hidden;
+                              min-height: 0;
+                            }
+                            table {
+                              font-size: 7pt;
+                              height: 100%;
+                            }
+                            th, td {
+                              padding: 2px 3px;
+                            }
+                            .employee-name {
+                              width: 100px;
+                              font-size: 6pt;
+                              line-height: 1.2;
+                              white-space: normal;
+                              word-wrap: break-word;
+                              padding: 2px 3px;
+                            }
+                            .day-number {
+                              font-size: 8pt;
+                              font-weight: bold;
+                            }
+                            .day-weekday {
+                              font-size: 6pt;
+                              color: #666;
+                            }
+                            .vacation-mark {
+                              font-weight: bold;
+                              font-size: 9pt;
+                            }
+                            .shift-mark {
+                              color: #999;
+                              font-size: 7pt;
+                              opacity: 0.5;
+                              font-weight: normal;
+                            }
+                          }
+                          body {
+                            margin: 0;
+                            padding: 0;
+                            font-family: Arial, sans-serif;
+                            font-size: 9pt;
+                          }
+                          .month-page {
+                            padding: 8mm;
+                            width: 100%;
+                            height: 100vh;
+                            display: flex;
+                            flex-direction: column;
+                            box-sizing: border-box;
+                          }
+                          .month-header {
+                            text-align: center;
+                            margin-bottom: 8mm;
+                            border-bottom: 2px solid #000;
+                            padding-bottom: 4mm;
+                            flex-shrink: 0;
+                          }
+                          .month-header h2 {
+                            margin: 0;
+                            font-size: 16pt;
+                            font-weight: bold;
+                          }
+                          .month-title {
+                            margin-top: 2mm;
+                            font-size: 12pt;
+                          }
+                          .table-container {
+                            flex: 1;
+                            overflow: hidden;
+                            min-height: 0;
+                            display: flex;
+                            flex-direction: column;
+                            height: 100%;
+                          }
+                          table {
+                            width: 100%;
+                            height: 100%;
+                            border-collapse: collapse;
+                            table-layout: fixed;
+                            font-size: 8pt;
+                            display: table;
+                          }
+                          tbody {
+                            display: table-row-group;
+                          }
+                          tr {
+                            height: 1px;
+                          }
+                          td {
+                            vertical-align: middle;
+                          }
+                          th, td {
+                            border: 1px solid #000;
+                            padding: 3px 4px;
+                            text-align: center;
+                            overflow: hidden;
+                            text-overflow: ellipsis;
+                          }
+                          th {
+                            background-color: #f0f0f0;
+                            font-weight: bold;
+                            position: sticky;
+                            top: 0;
+                            z-index: 10;
+                          }
+                          .employee-name {
+                            text-align: left;
+                            font-weight: bold;
+                            width: 120px;
+                            font-size: 7pt;
+                            line-height: 1.2;
+                            white-space: normal;
+                            word-wrap: break-word;
+                            padding: 4px 6px;
+                          }
+                          .shift-mark {
+                            color: #999;
+                            font-size: 8pt;
+                            opacity: 0.5;
+                          }
+                          .vacation-day {
+                            background-color: #ffeb3b;
+                            font-weight: bold;
+                          }
+                          .weekend {
+                            background-color: #f5f5f5;
+                          }
+                          .outside-period {
+                            background-color: #e0e0e0;
+                            opacity: 0.5;
+                          }
+                          .day-number {
+                            font-size: 9pt;
+                            font-weight: bold;
+                          }
+                          .day-weekday {
+                            font-size: 7pt;
+                            color: #666;
+                            margin-top: 1px;
+                          }
+                          .vacation-mark {
+                            font-weight: bold;
+                            font-size: 10pt;
+                          }
+                          .shift-mark {
+                            color: #999;
+                            font-size: 8pt;
+                            opacity: 0.5;
+                            font-weight: normal;
+                          }
+                        </style>
+                      </head>
+                      <body>
+                        ${monthPages}
+                      </body>
+                    </html>
+                  `;
+
+                  printWindow.document.write(printContent);
+                  printWindow.document.close();
+                  
+                  // Ждем загрузки и печатаем
+                  printWindow.onload = () => {
+                    setTimeout(() => {
+                      printWindow.print();
+                      printWindow.close();
+                    }, 250);
+                  };
+                }}
+                className="p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-full transition-colors"
+                title="Печать ростера отпусков"
+              >
+                <Printer className="w-5 h-5" />
               </button>
               <button
                 onClick={() => setIsSettingsOpen(true)}
@@ -221,84 +812,6 @@ export default function VacationMode() {
                 </svg>
               </button>
             </div>
-          </div>
-          <div className="flex items-center gap-2">
-            {viewMode === 'compact' && (
-              <div className="flex items-center gap-3 px-4 py-2 border border-gray-300 rounded-lg bg-white">
-                <div className="w-64">
-                  <Select
-                    value={selectedEmployeeId}
-                    onChange={(e) => {
-                      setSelectedEmployeeId(e.target.value);
-                    }}
-                    options={employeeOptions}
-                    placeholder="Выберите сотрудника"
-                    className="border-2 border-gray-300 focus:border-primary focus:ring-primary"
-                  />
-                </div>
-                <div className="flex items-center gap-1 border-l border-gray-300 pl-3">
-                  <button
-                    onClick={() => {
-                      setViewMode('compact');
-                      setSelectedEmployeeId('');
-                    }}
-                    className={`px-3 py-1 rounded text-sm font-medium transition-colors ${
-                      viewMode === 'compact'
-                        ? 'bg-primary text-white'
-                        : 'text-gray-600 hover:bg-gray-100'
-                    }`}
-                  >
-                    Компактный календарь
-                  </button>
-                  <button
-                    onClick={() => {
-                      setViewMode('roster');
-                      setSelectedEmployeeId('');
-                    }}
-                    className={`px-3 py-1 rounded text-sm font-medium transition-colors ${
-                      viewMode === 'roster'
-                        ? 'bg-primary text-white'
-                        : 'text-gray-600 hover:bg-gray-100'
-                    }`}
-                  >
-                    Ростер
-                  </button>
-                </div>
-              </div>
-            )}
-            {viewMode === 'roster' && (
-              <div className="flex items-center gap-1 px-4 py-2 border border-gray-300 rounded-lg bg-white">
-                <button
-                  onClick={() => {
-                    setViewMode('compact');
-                    setSelectedEmployeeId('');
-                  }}
-                  className={`px-3 py-1 rounded text-sm font-medium transition-colors ${
-                    viewMode === 'compact'
-                      ? 'bg-primary text-white'
-                      : 'text-gray-600 hover:bg-gray-100'
-                  }`}
-                >
-                  Компактный календарь
-                </button>
-                <button
-                  onClick={() => {
-                    setViewMode('roster');
-                    setSelectedEmployeeId('');
-                  }}
-                  className={`px-3 py-1 rounded text-sm font-medium transition-colors ${
-                    viewMode === 'roster'
-                      ? 'bg-primary text-white'
-                      : 'text-gray-600 hover:bg-gray-100'
-                  }`}
-                >
-                  Ростер
-                </button>
-              </div>
-            )}
-            <Button onClick={() => navigate(`/schedule/${scheduleId}`)} variant="outline">
-              Назад к расписанию
-            </Button>
           </div>
         </div>
 
@@ -338,12 +851,52 @@ export default function VacationMode() {
           onClose={() => setIsSettingsOpen(false)}
           title="Настройки отпусков"
           size="xl"
+          headerActions={
+            handleSave && (
+              <button
+                onClick={handleSave}
+                disabled={isSaving}
+                className="text-gray-400 hover:text-blue-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed p-1"
+                aria-label="Сохранить настройки"
+                title="Сохранить настройки"
+              >
+                {isSaving ? (
+                  <svg
+                    className="animate-spin h-5 w-5"
+                    xmlns="http://www.w3.org/2000/svg"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                  >
+                    <circle
+                      className="opacity-25"
+                      cx="12"
+                      cy="12"
+                      r="10"
+                      stroke="currentColor"
+                      strokeWidth="4"
+                    />
+                    <path
+                      className="opacity-75"
+                      fill="currentColor"
+                      d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+                    />
+                  </svg>
+                ) : (
+                  <Save className="w-5 h-5" />
+                )}
+              </button>
+            )
+          }
         >
           {employees && (
             <VacationSettingsPanel
               scheduleId={scheduleId}
-              employees={employees}
+              employees={visibleEmployees}
               onClose={() => setIsSettingsOpen(false)}
+              onSaveReady={(saveHandler, saving) => {
+                setHandleSave(() => saveHandler);
+                setIsSaving(saving);
+              }}
             />
           )}
         </Modal>
@@ -388,6 +941,106 @@ export default function VacationMode() {
             </div>
           </div>
         </Modal>
+
+        {/* Модальное окно со списком отпусков */}
+        <Modal
+          isOpen={isVacationsListOpen}
+          onClose={() => setIsVacationsListOpen(false)}
+          title="Назначенные отпуска"
+          size="lg"
+        >
+          {vacations && vacations.length > 0 ? (
+            <div className="space-y-4 max-h-[70vh] overflow-y-auto">
+              {(() => {
+                // Группируем отпуска по сотрудникам
+                const vacationsByEmployee = new Map<string, typeof vacations>();
+                vacations.forEach((vacation) => {
+                  const employeeId = vacation.employeeId;
+                  if (!vacationsByEmployee.has(employeeId)) {
+                    vacationsByEmployee.set(employeeId, []);
+                  }
+                  vacationsByEmployee.get(employeeId)!.push(vacation);
+                });
+
+                return Array.from(vacationsByEmployee.entries()).map(([employeeId, employeeVacations]) => {
+                  const employee = employees?.find(e => e.id === employeeId);
+                  return (
+                    <div key={employeeId} className="bg-gray-50 rounded-lg p-4">
+                      <div className="font-semibold text-lg mb-3">
+                        {employee?.fullName || 'Неизвестный сотрудник'}
+                        {employee?.tabNumber && (
+                          <span className="text-gray-500 ml-2 text-base font-normal">({employee.tabNumber})</span>
+                        )}
+                      </div>
+                      <div className="space-y-2">
+                        {employeeVacations.map((vacation) => (
+                          <div
+                            key={vacation.id}
+                            className="flex items-center justify-between p-3 bg-white rounded-lg border border-gray-200"
+                          >
+                            <div className="flex items-center gap-3 flex-1">
+                              <div className="text-sm text-gray-700">
+                                {format(parseLocalDate(vacation.startDate), 'dd.MM.yyyy', { locale: ru })} -{' '}
+                                {format(parseLocalDate(vacation.endDate), 'dd.MM.yyyy', { locale: ru })}
+                              </div>
+                              <Badge
+                                variant={
+                                  vacation.status === 'approved'
+                                    ? 'success'
+                                    : vacation.status === 'rejected'
+                                    ? 'danger'
+                                    : 'default'
+                                }
+                              >
+                                {vacation.status === 'approved'
+                                  ? 'Утвержден'
+                                  : vacation.status === 'rejected'
+                                  ? 'Отклонен'
+                                  : 'Ожидает'}
+                              </Badge>
+                            </div>
+                            <button
+                              onClick={async () => {
+                                if (window.confirm('Удалить этот период отпуска?')) {
+                                  try {
+                                    await vacationsService.deleteVacation(scheduleId, vacation.id);
+                                    queryClient.invalidateQueries({ queryKey: ['vacations', scheduleId] });
+                                  } catch (error: any) {
+                                    alert(error.message || 'Ошибка при удалении отпуска');
+                                  }
+                                }
+                              }}
+                              className="p-1.5 text-red-500 hover:text-red-700 hover:bg-red-50 rounded transition-colors"
+                              title="Удалить период отпуска"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                });
+              })()}
+            </div>
+          ) : (
+            <div className="text-center py-8 text-gray-500">
+              Нет назначенных отпусков
+            </div>
+          )}
+        </Modal>
+
+        {/* Модальное окно проверки синхронности */}
+        {schedule && employees && (
+          <RosterSyncComparisonModal
+            isOpen={isComparisonModalOpen}
+            onClose={() => setIsComparisonModalOpen(false)}
+            scheduleId={scheduleId!}
+            scheduleStart={scheduleStart}
+            scheduleEnd={scheduleEnd}
+            employees={employees}
+          />
+        )}
       </div>
     </MainLayout>
   );
