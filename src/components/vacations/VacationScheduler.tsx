@@ -23,6 +23,15 @@ export interface VacationSchedulerProps {
     name: string;
     color?: string;
   }>;
+  patternInstances?: Array<{
+    employeeId: string;
+    sequence: (string | null)[];
+    startIndex: number;
+    pattern?: {
+      cycleLength: number;
+    };
+  }>;
+  baseCycleStart: Date;
   viewMode: VacationViewMode;
   selectedEmployeeId: string;
   onViewModeChange: (mode: VacationViewMode) => void;
@@ -39,6 +48,8 @@ export default function VacationScheduler({
   vacations,
   shiftsByDateAndEmployee,
   shiftTypes = [],
+  patternInstances = [],
+  baseCycleStart,
   viewMode,
   selectedEmployeeId,
   onViewModeChange,
@@ -275,10 +286,9 @@ export default function VacationScheduler({
     }
   };
 
-  // Фильтруем только видимых сотрудников (как в ростере)
-  const visibleEmployees = useMemo(() => {
-    return employees.filter(emp => !emp.isHidden);
-  }, [employees]);
+  // Сотрудники уже отфильтрованы и отсортированы в родительском компоненте (VacationMode)
+  // Используем их напрямую без дополнительной фильтрации (как в MainSchedule)
+  const visibleEmployees = employees;
 
   // Определяем тип сообщения (предупреждение или ошибка)
   const isWarning = error && (error.includes('Осталось') || error.includes('рекомендуется'));
@@ -335,6 +345,8 @@ export default function VacationScheduler({
               vacations={vacations}
               shiftsByDateAndEmployee={shiftsByDateAndEmployee}
               shiftTypes={shiftTypes}
+              patternInstances={patternInstances}
+              baseCycleStart={baseCycleStart}
               onDateClick={handleCompactDateClick}
               selectionStart={selectionStart}
               selectionEnd={selectionEnd}
@@ -349,6 +361,8 @@ export default function VacationScheduler({
             vacations={vacations}
             shiftsByDateAndEmployee={shiftsByDateAndEmployee}
             shiftTypes={shiftTypes}
+            patternInstances={patternInstances}
+            baseCycleStart={baseCycleStart}
             onDateClick={handleRosterDateClick}
             selectionStart={selectionStart}
             selectionEnd={selectionEnd}

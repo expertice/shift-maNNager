@@ -5,6 +5,7 @@ import { validateSchedule } from './laborLawComplianceService.js';
 import { normalizeUtcStart, nextDayUtcStart } from '../utils/patternCycle';
 import { logger } from '../utils/logger';
 import * as rosterSnapshotService from './rosterSnapshotService';
+import { emitRosterUpdateEvent } from './realtimeService';
 
 export interface CreateShiftData {
   scheduleId: string;
@@ -363,6 +364,29 @@ export async function bulkCreateShifts(
       error: error instanceof Error ? error.message : String(error),
     });
     // Не прерываем выполнение, если обновление снимка не удалось
+  }
+
+  // ВАЖНО: Отправляем real-time событие для обновления UI в MainSchedule и VacationMode
+  // Это обеспечивает моментальное отображение сгенерированных смен
+  try {
+    logger.info('[bulkCreateShifts] Emitting roster:updated event', {
+      scheduleId,
+      shiftsCount: result.length,
+    });
+    emitRosterUpdateEvent(scheduleId, 'shift_profile_updated', {
+      shiftsCount: result.length,
+      employeeIds: [...new Set(result.map(s => s.employeeId))],
+    });
+    logger.info('[bulkCreateShifts] Roster:updated event emitted successfully', {
+      scheduleId,
+    });
+  } catch (error) {
+    logger.error('[bulkCreateShifts] Error emitting roster:updated event', {
+      scheduleId,
+      shiftsCount: result.length,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    // Не прерываем выполнение, если отправка события не удалась
   }
 
   return result.length;

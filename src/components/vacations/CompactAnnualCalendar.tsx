@@ -8,6 +8,7 @@ import { Vacation, Employee, Shift } from '@types';
 import { splitPeriodIntoMonths, isBirthday } from '@/utils/vacationCalendarUtils';
 import { useQuery } from '@tanstack/react-query';
 import { vacationRulesService } from '@services/api/vacationRulesService';
+import { computePositionInCycle } from '@/utils/patternCycle';
 
 export interface CompactAnnualCalendarProps {
   scheduleId: string;
@@ -22,6 +23,15 @@ export interface CompactAnnualCalendarProps {
     name: string;
     color?: string;
   }>;
+  patternInstances?: Array<{
+    employeeId: string;
+    sequence: (string | null)[];
+    startIndex: number;
+    pattern?: {
+      cycleLength: number;
+    };
+  }>;
+  baseCycleStart: Date;
   onDateClick: (date: Date) => void;
   selectionStart: Date | null;
   selectionEnd: Date | null;
@@ -42,6 +52,8 @@ export default function CompactAnnualCalendar({
   vacations,
   shiftsByDateAndEmployee,
   shiftTypes = [],
+  patternInstances = [],
+  baseCycleStart,
   onDateClick,
   selectionStart,
   selectionEnd,
@@ -102,11 +114,30 @@ export default function CompactAnnualCalendar({
   };
 
   // Получаем смену для даты и сотрудника
-  const getShiftForDate = (date: Date, employeeId: string): Shift | null => {
-    if (!shiftsByDateAndEmployee) return null;
-    const dateStr = format(date, 'yyyy-MM-dd');
+  // ВАЖНО: Возвращаем смену только если она имеет статус 'modified' или 'cancelled'
+  // Смены со статусом 'scheduled' обрабатываются через паттерны
+  const getShiftForDate = (date: Date, employeeId: string): { shift: Shift | null; shiftTypeId: string | null } => {
+    if (!shiftsByDateAndEmployee) return { shift: null, shiftTypeId: null };
+    const dateStr = format(startOfDay(date), 'yyyy-MM-dd');
     const key = `${dateStr}-${employeeId}`;
-    return shiftsByDateAndEmployee.get(key) || null;
+    const dailyShift = shiftsByDateAndEmployee.get(key) || null;
+    
+    // Сначала проверяем DailyShift со статусом 'modified' или 'cancelled', затем паттерн
+    // DailyShift со статусом 'scheduled' игнорируются, так как они созданы генератором и должны показываться через паттерн
+    let shiftTypeId: string | null = null;
+    if (dailyShift && (dailyShift.status === 'modified' || dailyShift.status === 'cancelled')) {
+      shiftTypeId = dailyShift.shiftTypeId;
+      return { shift: dailyShift, shiftTypeId };
+    } else {
+      // Если DailyShift нет или он имеет статус 'scheduled', используем паттерн
+      const instance = patternInstances?.find(inst => inst.employeeId === employeeId);
+      if (instance && instance.sequence && instance.sequence.length > 0) {
+        const cycleLength = instance.pattern?.cycleLength || instance.sequence.length;
+        const pos = computePositionInCycle(date, baseCycleStart, cycleLength, instance.startIndex || 0);
+        shiftTypeId = instance.sequence[pos] ?? null;
+      }
+      return { shift: null, shiftTypeId };
+    }
   };
 
   // Проверяем, находится ли дата в выбранном диапазоне
@@ -199,9 +230,9 @@ export default function CompactAnnualCalendar({
                       const inSelection = isDateInSelection(date);
                       const inVacation = isDateInVacation(date);
                       const vacationMarker = getVacationMarker(date);
-                      const shift = selectedEmployeeId ? getShiftForDate(date, selectedEmployeeId) : null;
-                      const shiftType = shift?.shiftTypeId
-                        ? shiftTypes.find(st => st.id === shift.shiftTypeId)
+                      const shiftResult = selectedEmployeeId ? getShiftForDate(date, selectedEmployeeId) : { shift: null, shiftTypeId: null };
+                      const shiftType = shiftResult.shiftTypeId
+                        ? shiftTypes.find(st => st.id === shiftResult.shiftTypeId)
                         : null;
                       const isBday = selectedEmployee?.birthDate
                         ? isBirthday(date, selectedEmployee.birthDate)

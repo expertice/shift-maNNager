@@ -9,6 +9,7 @@ import { isBirthday } from '@/utils/vacationCalendarUtils';
 import { useQuery } from '@tanstack/react-query';
 import { vacationRulesService } from '@services/api/vacationRulesService';
 import { parseLocalDate } from '@/utils/dateUtils';
+import { computePositionInCycle } from '@/utils/patternCycle';
 
 export interface VacationRosterViewProps {
   scheduleId: string;
@@ -22,6 +23,15 @@ export interface VacationRosterViewProps {
     name: string;
     color?: string;
   }>;
+  patternInstances?: Array<{
+    employeeId: string;
+    sequence: (string | null)[];
+    startIndex: number;
+    pattern?: {
+      cycleLength: number;
+    };
+  }>;
+  baseCycleStart: Date;
   onDateClick: (employeeId: string, date: Date) => void;
   selectionStart: Date | null;
   selectionEnd: Date | null;
@@ -49,6 +59,8 @@ const EmployeeRow = memo(({
   getRemainingDays,
   isLatestVacationDay,
   isDateBlocked,
+  patternInstances,
+  baseCycleStart,
 }: {
   employee: Employee;
   monthDays: Date[];
@@ -56,6 +68,15 @@ const EmployeeRow = memo(({
   vacationsByEmployee: Map<string, Vacation[]>;
   shiftsByDateAndEmployee?: Map<string, Shift>;
   shiftTypes: Array<{ id: string; name: string; color?: string }>;
+  patternInstances?: Array<{
+    employeeId: string;
+    sequence: (string | null)[];
+    startIndex: number;
+    pattern?: {
+      cycleLength: number;
+    };
+  }>;
+  baseCycleStart: Date;
   selectionStart: Date | null;
   selectionEnd: Date | null;
   selectedEmployeeId: string | null;
@@ -111,9 +132,26 @@ const EmployeeRow = memo(({
           {monthDays.map((day) => {
             const inVacation = isDateInVacation(day, employee.id);
             const inSelection = isDateInSelection(day, employee.id);
-            const shift = getShiftForDate(day, employee.id);
-            const shiftType = shift?.shiftTypeId
-              ? shiftTypes.find(st => st.id === shift.shiftTypeId)
+            // Получаем смену для даты (как в EmployeePatternRow - учитываем паттерны для 'scheduled')
+            const dailyShift = getShiftForDate(day, employee.id);
+            // Сначала проверяем DailyShift со статусом 'modified' или 'cancelled', затем паттерн
+            // DailyShift со статусом 'scheduled' игнорируются, так как они созданы генератором и должны показываться через паттерн
+            let shiftTypeId: string | null = null;
+            if (dailyShift && (dailyShift.status === 'modified' || dailyShift.status === 'cancelled')) {
+              shiftTypeId = dailyShift.shiftTypeId;
+            } else {
+              // Если DailyShift нет или он имеет статус 'scheduled', используем паттерн
+              const instance = patternInstances?.find(inst => inst.employeeId === employee.id);
+              if (instance && instance.sequence && instance.sequence.length > 0) {
+                const cycleLength = instance.pattern?.cycleLength || instance.sequence.length;
+                const pos = computePositionInCycle(day, baseCycleStart, cycleLength, instance.startIndex || 0);
+                shiftTypeId = instance.sequence[pos] ?? null;
+              }
+            }
+            
+            const shift = shiftTypeId ? { ...dailyShift, shiftTypeId } : dailyShift;
+            const shiftType = shiftTypeId
+              ? shiftTypes.find(st => st.id === shiftTypeId)
               : null;
             
             // Логирование для отладки (только для первых нескольких дней)
@@ -237,6 +275,8 @@ const MonthBoard = memo(({
   vacationsByEmployee,
   shiftsByDateAndEmployee,
   shiftTypes,
+  patternInstances,
+  baseCycleStart,
   selectionStart,
   selectionEnd,
   selectedEmployeeId,
@@ -256,6 +296,15 @@ const MonthBoard = memo(({
   vacationsByEmployee: Map<string, Vacation[]>;
   shiftsByDateAndEmployee?: Map<string, Shift>;
   shiftTypes: Array<{ id: string; name: string; color?: string }>;
+  patternInstances?: Array<{
+    employeeId: string;
+    sequence: (string | null)[];
+    startIndex: number;
+    pattern?: {
+      cycleLength: number;
+    };
+  }>;
+  baseCycleStart: Date;
   selectionStart: Date | null;
   selectionEnd: Date | null;
   selectedEmployeeId: string | null;
@@ -361,6 +410,8 @@ const MonthBoard = memo(({
               vacationsByEmployee={vacationsByEmployee}
               shiftsByDateAndEmployee={shiftsByDateAndEmployee}
               shiftTypes={shiftTypes}
+              patternInstances={patternInstances}
+              baseCycleStart={baseCycleStart}
               selectionStart={selectionStart}
               selectionEnd={selectionEnd}
               selectedEmployeeId={selectedEmployeeId}
@@ -391,6 +442,8 @@ export default function VacationRosterView({
   vacations,
   shiftsByDateAndEmployee,
   shiftTypes = [],
+  patternInstances = [],
+  baseCycleStart,
   onDateClick,
   selectionStart,
   selectionEnd,
@@ -452,26 +505,21 @@ export default function VacationRosterView({
   }, [vacationsByEmployee]);
 
   // Получаем смену для даты и сотрудника
+  // ВАЖНО: Возвращаем смену только если она имеет статус 'modified' или 'cancelled'
+  // Смены со статусом 'scheduled' обрабатываются через паттерны в EmployeeRow
   const getShiftForDate = useCallback((date: Date, employeeId: string): Shift | null => {
     if (!shiftsByDateAndEmployee) return null;
     const dateStr = format(startOfDay(date), 'yyyy-MM-dd');
     const key = `${dateStr}-${employeeId}`;
     const shift = shiftsByDateAndEmployee.get(key) || null;
     
-    // Логирование для отладки (только для первых нескольких дней и первых сотрудников)
-    if (date.getDate() <= 3 && employeeId && !shift) {
-      const sampleKeys = Array.from(shiftsByDateAndEmployee.keys()).slice(0, 5);
-      console.log('[VacationRosterView] Shift not found for date', {
-        date: dateStr,
-        employeeId,
-        key,
-        mapSize: shiftsByDateAndEmployee.size,
-        sampleKeys,
-        note: 'This might indicate a mismatch in date normalization or employeeId',
-      });
+    // Возвращаем смену только если она имеет статус 'modified' или 'cancelled'
+    // Смены со статусом 'scheduled' будут обработаны через паттерны
+    if (shift && (shift.status === 'modified' || shift.status === 'cancelled')) {
+      return shift;
     }
     
-    return shift;
+    return null;
   }, [shiftsByDateAndEmployee]);
 
   // Проверяем, находится ли дата в выбранном диапазоне
@@ -610,6 +658,8 @@ export default function VacationRosterView({
           vacationsByEmployee={vacationsByEmployee}
           shiftsByDateAndEmployee={shiftsByDateAndEmployee}
           shiftTypes={shiftTypes}
+          patternInstances={patternInstances}
+          baseCycleStart={baseCycleStart}
           selectionStart={selectionStart}
           selectionEnd={selectionEnd}
           selectedEmployeeId={selectedEmployeeId}

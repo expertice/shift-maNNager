@@ -4,8 +4,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { MainLayout, SidebarIcons } from '@components/layout';
 import { Button, Spinner, Modal, Select, Badge } from '@components/common';
 import classNames from 'classnames';
-import { schedulesService, employeesService, shiftsService, vacationsService, shiftProfilesService } from '@services/api';
-import * as rosterSnapshotService from '@services/api/rosterSnapshotService';
+import { schedulesService, employeesService, shiftsService, vacationsService, shiftProfilesService, patternInstancesService } from '@services/api';
 import { useRealtime } from '@hooks/useRealtime';
 import { Employee, Shift } from '@types';
 import { parseISO, startOfDay, endOfDay, startOfMonth, endOfMonth } from 'date-fns';
@@ -88,7 +87,7 @@ export default function VacationMode() {
       return shiftsService.getShifts(scheduleId, {
         startDate: start.toISOString(),
         endDate: end.toISOString(),
-        limit: 10000,
+        limit: 1000, // Большое число для загрузки всех смен (как в MainSchedule)
       });
     },
     enabled: !!scheduleId && !!schedule,
@@ -107,48 +106,30 @@ export default function VacationMode() {
     refetchOnWindowFocus: true,
   });
 
-  // Синхронизация снимка ростера при открытии страницы
-  // Это обеспечивает, что ростер отпусков ОДИН-В-ОДИН как ростер смен
-  const { data: rosterSnapshot, isLoading: snapshotLoading } = useQuery({
-    queryKey: ['roster-snapshot', scheduleId],
-    queryFn: async () => {
-      try {
-        // Сначала синхронизируем снимок с актуальными данными
-        await rosterSnapshotService.syncRosterSnapshot(scheduleId);
-        // Затем загружаем синхронизированный снимок
-        return await rosterSnapshotService.getRosterSnapshot(scheduleId);
-      } catch (error) {
-        console.error('Error syncing roster snapshot:', error);
-        // Если синхронизация не удалась, пытаемся просто загрузить существующий снимок
-        try {
-          return await rosterSnapshotService.getRosterSnapshot(scheduleId);
-        } catch {
-          return null;
-        }
-      }
-    },
+  // Загрузка экземпляров паттернов (как в MainSchedule)
+  const { data: patternInstances } = useQuery({
+    queryKey: ['patternInstances', scheduleId],
+    queryFn: () => patternInstancesService.getInstances(scheduleId),
     enabled: !!scheduleId,
     staleTime: 0,
     refetchOnMount: true,
-    refetchOnWindowFocus: false, // Не обновляем при возврате в окно, только при монтировании
+    refetchOnWindowFocus: true,
   });
 
   // Real-time обновления - обновляем данные при изменениях в ростере смен
-  useRealtime(scheduleId, () => {
-    // Инвалидируем и обновляем смены
+  useRealtime(scheduleId, (event) => {
+    // Обновляем данные при real-time событиях (как в MainSchedule)
     refetchShifts();
     queryClient.invalidateQueries({ queryKey: ['shifts', scheduleId] });
     queryClient.invalidateQueries({ queryKey: ['vacations', scheduleId] });
     queryClient.invalidateQueries({ queryKey: ['employees', scheduleId] });
-    queryClient.invalidateQueries({ queryKey: ['roster-snapshot', scheduleId] });
     queryClient.invalidateQueries({ queryKey: ['shiftProfiles', scheduleId] });
     queryClient.invalidateQueries({ queryKey: ['patternInstances', scheduleId] });
   });
 
 
   // Преобразуем смены в Map для быстрого доступа
-  // ВАЖНО: Используем смены из API (приоритет), чтобы всегда получать актуальные данные из БД
-  // Snapshot используется только как резервный источник
+  // Используем только смены из API (как в MainSchedule)
   // ВАЖНО: Нормализуем даты через startOfDay и format для консистентности с VacationRosterView
   const shiftsByDateAndEmployee = useMemo(() => {
     const map = new Map<string, Shift>();
@@ -159,57 +140,17 @@ export default function VacationMode() {
       return format(startOfDay(dateObj), 'yyyy-MM-dd');
     };
     
-    // Приоритет 1: Смены из API (актуальные данные из БД)
+    // Используем только смены из API (как в MainSchedule)
     if (shiftsData?.items && shiftsData.items.length > 0) {
-      console.log('[VacationMode] Using shifts from API', {
-        shiftsCount: shiftsData.items.length,
-        note: 'Loading shifts directly from API for up-to-date data',
-        sampleShifts: shiftsData.items.slice(0, 3).map(s => ({
-          id: s.id,
-          employeeId: s.employeeId,
-          date: typeof s.date === 'string' ? s.date : s.date.toISOString(),
-          shiftTypeId: s.shiftTypeId,
-        })),
-      });
       shiftsData.items.forEach(shift => {
         const dateStr = normalizeDate(shift.date);
         const key = `${dateStr}-${shift.employeeId}`;
         map.set(key, shift);
       });
-      console.log('[VacationMode] Shifts map created from API', {
-        mapSize: map.size,
-        sampleKeys: Array.from(map.keys()).slice(0, 5),
-      });
-      return map;
-    }
-    
-    // Приоритет 2: Смены из snapshot (резервный источник, если API не вернул данные)
-    if (rosterSnapshot?.shifts && Array.isArray(rosterSnapshot.shifts) && rosterSnapshot.shifts.length > 0) {
-      console.log('[VacationMode] Using shifts from roster snapshot (fallback)', {
-        shiftsCount: rosterSnapshot.shifts.length,
-        note: 'API returned no shifts, using snapshot as fallback',
-      });
-      rosterSnapshot.shifts.forEach((shift: any) => {
-        const dateStr = normalizeDate(shift.date);
-        const key = `${dateStr}-${shift.employeeId}`;
-        map.set(key, shift as Shift);
-      });
-      console.log('[VacationMode] Shifts map created from snapshot', {
-        mapSize: map.size,
-        sampleKeys: Array.from(map.keys()).slice(0, 5),
-      });
-    } else {
-      console.log('[VacationMode] No shifts available', {
-        hasSnapshot: !!rosterSnapshot,
-        hasSnapshotShifts: !!(rosterSnapshot?.shifts && Array.isArray(rosterSnapshot.shifts)),
-        snapshotShiftsCount: Array.isArray(rosterSnapshot?.shifts) ? rosterSnapshot.shifts.length : 0,
-        hasShiftsData: !!shiftsData,
-        shiftsDataItemsCount: shiftsData?.items?.length || 0,
-      });
     }
     
     return map;
-  }, [rosterSnapshot, shiftsData]);
+  }, [shiftsData]);
 
   // Получаем все типы смен из профилей
   const shiftTypes = useMemo(() => {
@@ -240,32 +181,26 @@ export default function VacationMode() {
     return endOfDay(date);
   }, [schedule]);
 
-  const isLoading = scheduleLoading || employeesLoading || vacationsLoading || snapshotLoading;
+  const isLoading = scheduleLoading || employeesLoading || vacationsLoading;
 
-  // Загружаем порядок сотрудников из снимка ростера (приоритет) или localStorage
-  // Это обеспечивает синхронизацию с MainSchedule - ростер отпусков ОДИН-В-ОДИН как ростер смен
+  // Загружаем порядок сотрудников из localStorage (как в MainSchedule)
   React.useEffect(() => {
     if (employees && employees.length > 0 && scheduleId) {
       const employeeIds = new Set(employees.map(emp => emp.id));
       
-      // Приоритет 1: Порядок из снимка ростера (самый актуальный из БД)
-      if (rosterSnapshot?.employeeOrder && Array.isArray(rosterSnapshot.employeeOrder) && rosterSnapshot.employeeOrder.length > 0) {
-        const validOrder = rosterSnapshot.employeeOrder.filter(id => employeeIds.has(id));
-        if (validOrder.length > 0) {
-          setEmployeeOrder(validOrder);
-          return;
-        }
-      }
-      
-      // Приоритет 2: Порядок из localStorage (резервный)
+      // Загружаем из localStorage (как в MainSchedule)
       const savedOrder = localStorage.getItem(`employeeOrder_${scheduleId}`);
       if (savedOrder) {
         try {
           const parsedOrder = JSON.parse(savedOrder);
           if (Array.isArray(parsedOrder) && parsedOrder.length > 0) {
             const validOrder = parsedOrder.filter(id => employeeIds.has(id));
-            if (validOrder.length > 0) {
-              setEmployeeOrder(validOrder);
+            const visibleEmployees = employees.filter(emp => !emp.isHidden);
+            const visibleIds = new Set(visibleEmployees.map(emp => emp.id));
+            const existingVisible = validOrder.filter(id => visibleIds.has(id));
+            
+            if (existingVisible.length > 0) {
+              setEmployeeOrder(existingVisible);
               return;
             }
           }
@@ -274,10 +209,10 @@ export default function VacationMode() {
         }
       }
       
-      // Приоритет 3: Если порядка нет, используем порядок из массива employees
-      setEmployeeOrder(employees.map(emp => emp.id));
+      // Если порядка нет, используем порядок из массива видимых сотрудников
+      setEmployeeOrder(employees.filter(emp => !emp.isHidden).map(emp => emp.id));
     }
-  }, [employees, scheduleId, rosterSnapshot]);
+  }, [employees, scheduleId]);
 
   // Фильтруем только видимых сотрудников и сортируем по порядку из MainSchedule
   const visibleEmployees = useMemo(() => {
@@ -828,10 +763,12 @@ export default function VacationMode() {
             scheduleId={scheduleId}
             scheduleStart={scheduleStart}
             scheduleEnd={scheduleEnd}
-            employees={employees}
+            employees={visibleEmployees}
             vacations={vacations || []}
             shiftsByDateAndEmployee={shiftsByDateAndEmployee}
             shiftTypes={shiftTypes}
+            patternInstances={patternInstances || []}
+            baseCycleStart={startOfDay(new Date(schedule.startDate))}
             viewMode={viewMode}
             selectedEmployeeId={selectedEmployeeId}
             onViewModeChange={setViewMode}
