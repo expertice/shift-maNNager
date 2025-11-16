@@ -1,5 +1,5 @@
 import React from 'react';
-import { Card, Button, Badge } from '@components/common';
+import { Card, Badge } from '@components/common';
 import { ShiftProfile } from '@types';
 import { Pencil, Copy, Trash2, Play, Eye } from 'lucide-react';
 
@@ -146,58 +146,48 @@ export const ShiftProfilesTable: React.FC<ShiftProfilesTableProps> = ({
                   {!comparisonMode && (
                     <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
                       <div className="flex items-center justify-end gap-2" onClick={(e) => e.stopPropagation()}>
-                        <Button
-                          size="sm"
-                          variant="primary"
+                        <button
                           onClick={() => onGenerate(profile.id)}
+                          className="h-9 w-9 flex items-center justify-center rounded-lg border-2 border-primary bg-primary text-white hover:bg-primary/90 transition-colors"
                           title="Использовать профиль"
-                          className="px-2"
                         >
-                          <Play size={16} />
-                        </Button>
+                          <Play className="h-4 w-4" />
+                        </button>
                         {onEdit && (
-                          <Button
-                            size="sm"
-                            variant="outline"
+                          <button
                             onClick={() => onEdit(profile.id)}
+                            className="h-9 w-9 flex items-center justify-center rounded-lg border-2 border-primary text-primary hover:bg-primary hover:text-white transition-colors"
                             title="Редактировать"
-                            className="px-2"
                           >
-                            <Pencil size={16} />
-                          </Button>
+                            <Pencil className="h-4 w-4" />
+                          </button>
                         )}
                         {onClone && (
-                          <Button
-                            size="sm"
-                            variant="outline"
+                          <button
                             onClick={() => onClone(profile.id)}
+                            className="h-9 w-9 flex items-center justify-center rounded-lg border-2 border-primary text-primary hover:bg-primary hover:text-white transition-colors"
                             title="Клонировать профиль"
-                            className="px-2"
                           >
-                            <Copy size={16} />
-                          </Button>
+                            <Copy className="h-4 w-4" />
+                          </button>
                         )}
                         {onDelete && (
-                          <Button
-                            size="sm"
-                            variant="outline"
+                          <button
                             onClick={() => onDelete(profile.id)}
-                            className="px-2 text-red-600 hover:text-red-700 hover:border-red-600"
+                            className="h-9 w-9 flex items-center justify-center rounded-lg border-2 border-red-300 text-red-600 hover:bg-red-50 transition-colors"
                             title="Удалить профиль"
                           >
-                            <Trash2 size={16} />
-                          </Button>
+                            <Trash2 className="h-4 w-4" />
+                          </button>
                         )}
                         {onViewDetails && (
-                          <Button
-                            size="sm"
-                            variant="outline"
+                          <button
                             onClick={() => onViewDetails(profile.id)}
+                            className="h-9 w-9 flex items-center justify-center rounded-lg border-2 border-primary text-primary hover:bg-primary hover:text-white transition-colors"
                             title="Посмотреть детали"
-                            className="px-2"
                           >
-                            <Eye size={16} />
-                          </Button>
+                            <Eye className="h-4 w-4" />
+                          </button>
                         )}
                       </div>
                     </td>

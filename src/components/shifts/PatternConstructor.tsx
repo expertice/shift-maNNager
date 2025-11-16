@@ -36,7 +36,8 @@ export const SlotView: React.FC<{
   title?: string;
   onClick?: (e: React.MouseEvent<HTMLDivElement>) => void;
   textClassName?: string;
-}> = ({ label, color, isEmpty, isDragging, className, title, onClick, textClassName }) => (
+  style?: React.CSSProperties;
+}> = ({ label, color, isEmpty, isDragging, className, title, onClick, textClassName, style }) => (
   <div
     className={classNames(
       'relative flex items-center justify-center',
@@ -49,6 +50,7 @@ export const SlotView: React.FC<{
     )}
     title={title}
     onClick={onClick}
+    style={style}
   >
     {!isEmpty && (
       <div className="absolute inset-0 rounded-md" style={{ backgroundColor: color || '#E5E7EB', opacity: 0.65 }} />

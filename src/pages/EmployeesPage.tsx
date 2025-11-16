@@ -2,11 +2,11 @@ import React, { useState, useMemo, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { MainLayout, SidebarIcons } from '@components/layout';
-import { Button, Card, Spinner } from '@components/common';
+import { Button, Card, Spinner, Modal } from '@components/common';
 import { EditEmployeeModal, BulkEditModal, ImportExportModal, EmployeeRowView } from '@components/employees';
 import { employeesService, schedulesService, positionsService } from '@services/api';
 import { Employee } from '@types';
-import { Grid3x3, List, Eye, EyeOff } from 'lucide-react';
+import { Grid3x3, List, Eye, EyeOff, Pencil, Key, Trash2, CheckSquare, Upload, Plus, Edit, HelpCircle } from 'lucide-react';
 
 /**
  * Страница управления сотрудниками
@@ -21,6 +21,7 @@ export default function EmployeesPage() {
   const [selectedEmployeeIds, setSelectedEmployeeIds] = useState<Set<string>>(new Set());
   const [isBulkEditModalOpen, setIsBulkEditModalOpen] = useState(false);
   const [isImportExportModalOpen, setIsImportExportModalOpen] = useState(false);
+  const [isHelpOpen, setIsHelpOpen] = useState(false);
   
   // Загружаем режим отображения из localStorage
   const getInitialViewMode = (): 'tiles' | 'rows' => {
@@ -152,8 +153,8 @@ export default function EmployeesPage() {
 
   // Импорт сотрудников
   const importMutation = useMutation({
-    mutationFn: ({ file, mode }: { file: File; mode: 'create' | 'update' | 'mixed' }) =>
-      employeesService.importEmployees(scheduleId, file, mode),
+    mutationFn: ({ file, mode, selectedIndices }: { file: File; mode: 'create' | 'update' | 'mixed'; selectedIndices?: number[] }) =>
+      employeesService.importEmployees(scheduleId, file, mode, selectedIndices),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['employees', scheduleId] });
     },
@@ -218,8 +219,8 @@ export default function EmployeesPage() {
     });
   };
 
-  const handleImport = async (file: File, mode: 'create' | 'update' | 'mixed') => {
-    return importMutation.mutateAsync({ file, mode });
+  const handleImport = async (file: File, mode: 'create' | 'update' | 'mixed', selectedIndices?: number[]) => {
+    return importMutation.mutateAsync({ file, mode, selectedIndices });
   };
 
   const handleExport = async (format: 'csv' | 'xlsx') => {
@@ -272,7 +273,16 @@ export default function EmployeesPage() {
     <MainLayout sidebarItems={sidebarItems}>
       <div className="p-8">
         <div className="flex items-center justify-between mb-6">
-          <h1 className="text-3xl font-bold">Сотрудники</h1>
+          <div className="flex items-center gap-3">
+            <h1 className="text-3xl font-bold">Сотрудники</h1>
+            <button
+              onClick={() => setIsHelpOpen(true)}
+              className="h-9 w-9 flex items-center justify-center rounded-lg border-2 border-primary text-primary hover:bg-primary hover:text-white transition-colors"
+              title="Помощь"
+            >
+              <HelpCircle className="w-5 h-5" />
+            </button>
+          </div>
           <div className="flex items-center gap-2">
             <div className="flex items-center gap-1 border rounded-md p-1">
               <button
@@ -300,19 +310,34 @@ export default function EmployeesPage() {
               {showHidden ? <Eye className="h-4 w-4" /> : <EyeOff className="h-4 w-4" />}
               <span className="text-sm">Скрытые</span>
             </button>
-            <Button
-              variant={isSelectionMode ? 'secondary' : 'outline'}
+            <button
               onClick={() => {
                 setIsSelectionMode(!isSelectionMode);
                 setSelectedEmployeeIds(new Set());
               }}
+              className={`p-2 rounded border transition-colors ${
+                isSelectionMode 
+                  ? 'bg-primary text-white border-primary hover:bg-primary/90' 
+                  : 'border-gray-300 hover:bg-gray-50 text-gray-700'
+              }`}
+              title={isSelectionMode ? 'Отменить выбор' : 'Выбрать'}
             >
-              {isSelectionMode ? 'Отменить выбор' : 'Выбрать'}
-            </Button>
-            <Button variant="outline" onClick={() => setIsImportExportModalOpen(true)}>
-              Импорт/Экспорт
-            </Button>
-            <Button onClick={() => setIsCreateModalOpen(true)}>+ Добавить сотрудника</Button>
+              <CheckSquare className="h-5 w-5" />
+            </button>
+            <button
+              onClick={() => setIsImportExportModalOpen(true)}
+              className="p-2 rounded border border-gray-300 hover:bg-gray-50 text-gray-700 transition-colors"
+              title="Импорт/Экспорт"
+            >
+              <Upload className="h-5 w-5" />
+            </button>
+            <button
+              onClick={() => setIsCreateModalOpen(true)}
+              className="p-2 rounded border border-primary bg-primary text-white hover:bg-primary/90 transition-colors"
+              title="Добавить сотрудника"
+            >
+              <Plus className="h-5 w-5" />
+            </button>
           </div>
         </div>
 
@@ -323,12 +348,20 @@ export default function EmployeesPage() {
                 Выбрано: {selectedEmployeeIds.size} сотрудников
               </span>
               <div className="flex items-center gap-2">
-                <Button size="sm" variant="outline" onClick={handleBulkEdit}>
-                  Массовое редактирование
-                </Button>
-                <Button size="sm" variant="danger" onClick={handleBulkDelete}>
-                  Массовое удаление
-                </Button>
+                <button
+                  onClick={handleBulkEdit}
+                  className="p-2 rounded border border-gray-300 hover:bg-gray-50 text-gray-700 transition-colors"
+                  title="Массовое редактирование"
+                >
+                  <Edit className="h-4 w-4" />
+                </button>
+                <button
+                  onClick={handleBulkDelete}
+                  className="p-2 rounded border border-red-300 hover:bg-red-50 text-red-600 transition-colors"
+                  title="Массовое удаление"
+                >
+                  <Trash2 className="h-4 w-4" />
+                </button>
               </div>
             </div>
           </div>
@@ -344,9 +377,13 @@ export default function EmployeesPage() {
           <div className="mb-4">
             {isSelectionMode && (
               <div className="mb-3">
-                <Button size="sm" variant="outline" onClick={handleSelectAll}>
-                  {selectedEmployeeIds.size === filteredEmployees.length ? 'Снять выделение' : 'Выбрать все'}
-                </Button>
+                <button
+                  onClick={handleSelectAll}
+                  className="p-2 rounded border border-gray-300 hover:bg-gray-50 text-gray-700 transition-colors"
+                  title={selectedEmployeeIds.size === filteredEmployees.length ? 'Снять выделение' : 'Выбрать все'}
+                >
+                  <CheckSquare className="h-4 w-4" />
+                </button>
               </div>
             )}
             {viewMode === 'tiles' ? (
@@ -406,27 +443,27 @@ export default function EmployeesPage() {
                             </button>
                           </div>
                           <div className="flex space-x-2">
-                            <Button
-                              size="sm"
-                              variant="outline"
+                            <button
                               onClick={() => setEditingEmployeeId(employee.id)}
+                              className="p-2 rounded border border-gray-300 hover:bg-gray-50 text-gray-700 transition-colors"
+                              title="Редактировать"
                             >
-                              Редактировать
-                            </Button>
-                            <Button
-                              size="sm"
-                              variant="outline"
+                              <Pencil className="h-4 w-4" />
+                            </button>
+                            <button
                               onClick={() => generatePasswordMutation.mutate(employee.id)}
+                              className="p-2 rounded border border-gray-300 hover:bg-gray-50 text-gray-700 transition-colors"
+                              title="Сгенерировать пароль"
                             >
-                              Пароль
-                            </Button>
-                            <Button
-                              size="sm"
-                              variant="danger"
+                              <Key className="h-4 w-4" />
+                            </button>
+                            <button
                               onClick={() => handleDelete(employee.id)}
+                              className="p-2 rounded border border-red-300 hover:bg-red-50 text-red-600 transition-colors"
+                              title="Удалить"
                             >
-                              Удалить
-                            </Button>
+                              <Trash2 className="h-4 w-4" />
+                            </button>
                           </div>
                         </div>
                       )}
@@ -453,9 +490,13 @@ export default function EmployeesPage() {
         {(!employees || employees.length === 0) && !isLoading && (
           <Card className="p-8 text-center">
             <p className="text-gray-500 mb-4">Нет сотрудников в этом расписании</p>
-            <Button onClick={() => setIsCreateModalOpen(true)}>
-              Добавить первого сотрудника
-            </Button>
+            <button
+              onClick={() => setIsCreateModalOpen(true)}
+              className="p-2 rounded border border-primary bg-primary text-white hover:bg-primary/90 transition-colors"
+              title="Добавить первого сотрудника"
+            >
+              <Plus className="h-5 w-5" />
+            </button>
           </Card>
         )}
         {employees && employees.length > 0 && filteredEmployees.length === 0 && (
@@ -464,9 +505,13 @@ export default function EmployeesPage() {
               {showHidden ? 'Нет сотрудников' : 'Нет видимых сотрудников'}
             </p>
             {!showHidden && (
-              <Button variant="outline" onClick={() => setShowHidden(true)}>
-                Показать скрытых
-              </Button>
+              <button
+                onClick={() => setShowHidden(true)}
+                className="p-2 rounded border border-gray-300 hover:bg-gray-50 text-gray-700 transition-colors"
+                title="Показать скрытых"
+              >
+                <Eye className="h-4 w-4" />
+              </button>
             )}
           </Card>
         )}
@@ -526,6 +571,76 @@ export default function EmployeesPage() {
           scheduleId={scheduleId}
           isLoading={importMutation.isPending || exportMutation.isPending}
         />
+
+        {/* Модальное окно помощи */}
+        <Modal
+          isOpen={isHelpOpen}
+          onClose={() => setIsHelpOpen(false)}
+          title="Помощь по разделу 'Сотрудники'"
+          size="lg"
+        >
+          <div className="space-y-4">
+            <div>
+              <h3 className="text-lg font-semibold mb-2">Как добавить сотрудника</h3>
+              <ul className="list-disc list-inside space-y-1 text-gray-700">
+                <li>Нажмите на кнопку с иконкой "+" в правом верхнем углу</li>
+                <li>Заполните обязательные поля: ФИО, Табельный номер, Отдел</li>
+                <li>Опционально укажите должность и дату рождения</li>
+                <li>Нажмите "Сохранить" для создания сотрудника</li>
+              </ul>
+            </div>
+            <div>
+              <h3 className="text-lg font-semibold mb-2">Как редактировать сотрудника</h3>
+              <ul className="list-disc list-inside space-y-1 text-gray-700">
+                <li>В режиме "Плитки": нажмите на иконку карандаша на карточке сотрудника</li>
+                <li>В режиме "Строки": нажмите на иконку карандаша в строке сотрудника</li>
+                <li>Внесите необходимые изменения и нажмите "Сохранить"</li>
+              </ul>
+            </div>
+            <div>
+              <h3 className="text-lg font-semibold mb-2">Массовые операции</h3>
+              <ul className="list-disc list-inside space-y-1 text-gray-700">
+                <li>Нажмите на кнопку с иконкой галочки для включения режима выбора</li>
+                <li>Выберите нужных сотрудников, используя чекбоксы</li>
+                <li>Используйте кнопку "Выбрать все" для массового выбора</li>
+                <li>После выбора доступны операции: массовое редактирование и массовое удаление</li>
+              </ul>
+            </div>
+            <div>
+              <h3 className="text-lg font-semibold mb-2">Импорт и экспорт</h3>
+              <ul className="list-disc list-inside space-y-1 text-gray-700">
+                <li>Нажмите на кнопку с иконкой загрузки для открытия окна импорта/экспорта</li>
+                <li>Импорт: выберите файл (CSV или Excel), выберите режим импорта и нужных сотрудников</li>
+                <li>Экспорт: выберите формат (CSV или Excel) для сохранения данных</li>
+                <li>При импорте можно выбрать конкретных сотрудников и отсортировать их по различным параметрам</li>
+              </ul>
+            </div>
+            <div>
+              <h3 className="text-lg font-semibold mb-2">Режимы отображения</h3>
+              <ul className="list-disc list-inside space-y-1 text-gray-700">
+                <li>"Плитки" - отображение сотрудников в виде карточек</li>
+                <li>"Строки" - отображение сотрудников в виде таблицы</li>
+                <li>Выбранный режим сохраняется автоматически</li>
+              </ul>
+            </div>
+            <div>
+              <h3 className="text-lg font-semibold mb-2">Скрытые сотрудники</h3>
+              <ul className="list-disc list-inside space-y-1 text-gray-700">
+                <li>Используйте кнопку "Скрытые" для показа/скрытия неактивных сотрудников</li>
+                <li>Скрытые сотрудники отображаются с пониженной непрозрачностью</li>
+                <li>Скрытие сотрудника не удаляет его из системы, а только скрывает из основного списка</li>
+              </ul>
+            </div>
+            <div>
+              <h3 className="text-lg font-semibold mb-2">Дополнительные функции</h3>
+              <ul className="list-disc list-inside space-y-1 text-gray-700">
+                <li>Генерация пароля: нажмите на иконку ключа для генерации нового пароля сотрудника</li>
+                <li>Удаление: нажмите на иконку корзины для удаления сотрудника (требует подтверждения)</li>
+                <li>Все изменения сохраняются автоматически после подтверждения</li>
+              </ul>
+            </div>
+          </div>
+        </Modal>
       </div>
     </MainLayout>
   );

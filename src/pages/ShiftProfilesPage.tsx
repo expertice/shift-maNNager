@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { MainLayout, SidebarIcons } from '@components/layout';
-import { Button, Card, Spinner } from '@components/common';
+import { Card, Spinner } from '@components/common';
 import { ShiftProfilesTable } from '@components/shifts/ShiftProfilesTable';
 import { GenerateShiftsModal } from '@components/shifts/GenerateShiftsModal';
 import { CreatePlaceholdersModal } from '@components/shifts/CreatePlaceholdersModal';
@@ -273,8 +273,8 @@ export default function ShiftProfilesPage() {
 
   // Импорт профилей смен
   const importMutation = useMutation({
-    mutationFn: ({ file, mode }: { file: File; mode: 'create' | 'update' | 'mixed' }) =>
-      shiftProfilesService.importShiftProfiles(scheduleId, file, mode),
+    mutationFn: ({ file, mode, selectedIndices }: { file: File; mode: 'create' | 'update' | 'mixed'; selectedIndices?: number[] }) =>
+      shiftProfilesService.importShiftProfiles(scheduleId, file, mode, selectedIndices),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['shift-profiles', scheduleId] });
     },
@@ -286,8 +286,8 @@ export default function ShiftProfilesPage() {
       shiftProfilesService.exportShiftProfiles(scheduleId, format, profileIds),
   });
 
-  const handleImport = async (file: File, mode: 'create' | 'update' | 'mixed') => {
-    return importMutation.mutateAsync({ file, mode });
+  const handleImport = async (file: File, mode: 'create' | 'update' | 'mixed', selectedIndices?: number[]) => {
+    return importMutation.mutateAsync({ file, mode, selectedIndices });
   };
 
   const handleExport = async (format: 'json', profileIds?: string[]) => {
@@ -356,63 +356,65 @@ export default function ShiftProfilesPage() {
               Выберите профиль для генерации расписания смен или создайте новый
             </p>
           </div>
-          <div className="flex gap-2">
+          <div className="flex items-center gap-1">
             {!comparisonMode && (
               <>
-                <Button onClick={handleCreateNew} variant="primary" title="Создать профиль">
-                  <Plus size={18} className="mr-1" />
-                  Создать профиль
-                </Button>
-                <Button 
+                <button
+                  onClick={handleCreateNew}
+                  className="h-9 w-9 flex items-center justify-center rounded-lg border-2 border-primary bg-primary text-white hover:bg-primary/90 transition-colors"
+                  title="Создать профиль"
+                >
+                  <Plus className="h-5 w-5" />
+                </button>
+                <button
                   onClick={() => setIsImportExportModalOpen(true)} 
-                  variant="outline"
+                  className="h-9 w-9 flex items-center justify-center rounded-lg border-2 border-primary text-primary hover:bg-primary hover:text-white transition-colors"
                   title="Импорт / Экспорт профилей"
                 >
-                  <Upload size={18} className="mr-1" />
-                  Импорт / Экспорт
-                </Button>
-                <Button 
+                  <Upload className="h-5 w-5" />
+                </button>
+                <button
                   onClick={() => setComparisonMode(true)} 
-                  variant="outline"
+                  className="h-9 w-9 flex items-center justify-center rounded-lg border-2 border-primary text-primary hover:bg-primary hover:text-white transition-colors"
                   title="Сравнить профили"
                 >
-                  <GitCompare size={18} className="mr-1" />
-                  Сравнить профили
-                </Button>
+                  <GitCompare className="h-5 w-5" />
+                </button>
               </>
             )}
             {comparisonMode && (
               <>
-                <Button
+                <button
                   onClick={() => setIsCompareModalOpen(true)}
-                  variant="primary"
                   disabled={selectedProfileIds.length < 2}
+                  className={`h-9 w-9 flex items-center justify-center rounded-lg border-2 transition-colors ${
+                    selectedProfileIds.length < 2
+                      ? 'border-gray-300 text-gray-400 cursor-not-allowed'
+                      : 'border-primary bg-primary text-white hover:bg-primary/90'
+                  }`}
                   title="Сравнить выбранные профили"
                 >
-                  <GitCompare size={18} className="mr-1" />
-                  Сравнить ({selectedProfileIds.length})
-                </Button>
-                <Button
+                  <GitCompare className="h-5 w-5" />
+                </button>
+                <button
                   onClick={() => {
                     setComparisonMode(false);
                     setSelectedProfileIds([]);
                   }}
-                  variant="outline"
+                  className="h-9 w-9 flex items-center justify-center rounded-lg border-2 border-primary text-primary hover:bg-primary hover:text-white transition-colors"
                   title="Отменить режим сравнения"
                 >
-                  <X size={18} className="mr-1" />
-                  Отмена
-                </Button>
+                  <X className="h-5 w-5" />
+                </button>
               </>
             )}
-            <Button 
+            <button
               onClick={() => navigate(`/schedule/${scheduleId}`)} 
-              variant="outline"
+              className="h-9 w-9 flex items-center justify-center rounded-lg border-2 border-primary text-primary hover:bg-primary hover:text-white transition-colors"
               title="Назад к расписанию"
             >
-              <ArrowLeft size={18} className="mr-1" />
-              Назад к расписанию
-            </Button>
+              <ArrowLeft className="h-5 w-5" />
+            </button>
           </div>
         </div>
 

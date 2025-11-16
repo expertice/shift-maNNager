@@ -14,7 +14,7 @@ import { parseLocalDate } from '@/utils/dateUtils';
 import { splitPeriodByMonths } from '@/utils/rosterCalendar';
 import VacationScheduler from '@components/vacations/VacationScheduler';
 import VacationSettingsPanel from '@components/vacations/VacationSettingsPanel';
-import { Save, Trash2, Printer, Calendar, Grid3x3, GitCompare } from 'lucide-react';
+import { Save, Trash2, Printer, Calendar, Grid3x3, GitCompare, HelpCircle } from 'lucide-react';
 import RosterSyncComparisonModal from '@components/vacations/RosterSyncComparisonModal';
 
 /**
@@ -271,6 +271,13 @@ export default function VacationMode() {
         <div className="flex items-center justify-between mb-6">
           <div className="flex items-center gap-3">
             <h1 className="text-3xl font-bold">Режим отпусков</h1>
+            <button
+              onClick={() => setIsHelpOpen(true)}
+              className="h-9 w-9 flex items-center justify-center rounded-lg border-2 border-primary text-primary hover:bg-primary hover:text-white transition-colors"
+              title="Помощь"
+            >
+              <HelpCircle className="w-5 h-5" />
+            </button>
             {/* Переключатель режимов просмотра */}
             <div className="flex items-center gap-1 border border-gray-300 rounded-lg bg-white p-1">
               <button
@@ -321,34 +328,14 @@ export default function VacationMode() {
             <div className="flex items-center gap-1">
               <button
                 onClick={() => setIsComparisonModalOpen(true)}
-                className="p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-full transition-colors"
+                className="h-9 w-9 flex items-center justify-center rounded-lg border-2 border-primary text-primary hover:bg-primary hover:text-white transition-colors"
                 title="Проверить синхронность с ростером смен"
               >
                 <GitCompare className="w-5 h-5" />
               </button>
               <button
-                onClick={() => setIsHelpOpen(true)}
-                className="p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-full transition-colors"
-                title="Помощь"
-              >
-                <svg
-                  className="w-5 h-5"
-                  fill="none"
-                  stroke="currentColor"
-                  viewBox="0 0 24 24"
-                  xmlns="http://www.w3.org/2000/svg"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={2}
-                    d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
-                  />
-                </svg>
-              </button>
-              <button
                 onClick={() => setIsVacationsListOpen(true)}
-                className="p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-full transition-colors"
+                className="h-9 w-9 flex items-center justify-center rounded-lg border-2 border-primary text-primary hover:bg-primary hover:text-white transition-colors"
                 title="Список отпусков"
               >
                 <svg
@@ -373,8 +360,8 @@ export default function VacationMode() {
                     return;
                   }
 
-                  // Фильтруем видимых сотрудников
-                  const visibleEmps = employees.filter(emp => !emp.isHidden);
+                  // Используем visibleEmployees, который уже отсортирован по порядку из ростера
+                  // Это гарантирует, что порядок сотрудников при печати совпадает с порядком в ростерах
                   
                   // Разбиваем период на месяцы
                   const months = splitPeriodByMonths(scheduleStart, scheduleEnd);
@@ -427,8 +414,8 @@ export default function VacationMode() {
                       );
                     }
 
-                    // Генерируем строки для сотрудников
-                    const employeeRows = visibleEmps.map(employee => {
+                    // Генерируем строки для сотрудников (используем visibleEmployees для сохранения порядка из ростера)
+                    const employeeRows = visibleEmployees.map(employee => {
                       const employeeVacations = vacations.filter(v => v.employeeId === employee.id);
                       const vacationDays = new Set<string>();
                       employeeVacations.forEach(vacation => {
@@ -715,14 +702,14 @@ export default function VacationMode() {
                     }, 250);
                   };
                 }}
-                className="p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-full transition-colors"
+                className="h-9 w-9 flex items-center justify-center rounded-lg border-2 border-primary text-primary hover:bg-primary hover:text-white transition-colors"
                 title="Печать ростера отпусков"
               >
                 <Printer className="w-5 h-5" />
               </button>
               <button
                 onClick={() => setIsSettingsOpen(true)}
-                className="p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-full transition-colors"
+                className="h-9 w-9 flex items-center justify-center rounded-lg border-2 border-primary text-primary hover:bg-primary hover:text-white transition-colors"
                 title="Настройки"
               >
                 <svg
@@ -829,6 +816,7 @@ export default function VacationMode() {
             <VacationSettingsPanel
               scheduleId={scheduleId}
               employees={visibleEmployees}
+              scheduleStart={scheduleStart}
               onClose={() => setIsSettingsOpen(false)}
               onSaveReady={(saveHandler, saving) => {
                 setHandleSave(() => saveHandler);

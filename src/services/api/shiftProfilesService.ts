@@ -219,7 +219,8 @@ export const shiftProfilesService = {
   importShiftProfiles: async (
     scheduleId: string,
     file: File,
-    mode: 'create' | 'update' | 'mixed'
+    mode: 'create' | 'update' | 'mixed',
+    selectedIndices?: number[]
   ): Promise<{
     success: number;
     errors: Array<{ row: number; message: string }>;
@@ -227,6 +228,9 @@ export const shiftProfilesService = {
     const formData = new FormData();
     formData.append('file', file);
     formData.append('mode', mode);
+    if (selectedIndices && selectedIndices.length > 0) {
+      formData.append('selectedIndices', JSON.stringify(selectedIndices));
+    }
 
     const response = await apiClient.post<ApiResponse<{
       success: number;

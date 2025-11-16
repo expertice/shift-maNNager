@@ -2,7 +2,7 @@ import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query';
 import { MainLayout, SidebarIcons } from '@components/layout';
-import { Spinner, Card, Button, Badge, Modal } from '@components/common';
+import { Spinner, Card, Badge, Modal } from '@components/common';
 import { schedulesService, shiftsService, employeesService, patternInstancesService, shiftProfilesService, positionsService } from '@services/api';
 import type { RosterPatternInstanceDTO } from '@services/api/patternInstancesService';
 import { useRealtime } from '@hooks/useRealtime';
@@ -20,6 +20,7 @@ import LaborViolationsModal from '@components/schedules/LaborViolationsModal';
 import LaborLawSettingsModal from '@components/labor/LaborLawSettingsModal';
 import { EmployeeStatistics } from '@components/schedules/EmployeeStatistics';
 import { getViolationStats } from '@services/api/laborLawComplianceApi';
+import { HelpCircle, Users, Calendar, Umbrella } from 'lucide-react';
 
 /**
  * Основная страница редактирования расписания
@@ -707,23 +708,10 @@ export default function MainSchedule() {
                   <h1 className="text-3xl font-bold">{schedule.name}</h1>
                     <button
                       onClick={() => setIsHelpOpen(true)}
-                      className="p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-full transition-colors"
+                      className="h-9 w-9 flex items-center justify-center rounded-lg border-2 border-primary text-primary hover:bg-primary hover:text-white transition-colors"
                       title="Помощь"
                     >
-                      <svg
-                        className="w-5 h-5"
-                        fill="none"
-                        stroke="currentColor"
-                        viewBox="0 0 24 24"
-                        xmlns="http://www.w3.org/2000/svg"
-                      >
-                        <path
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                          strokeWidth={2}
-                          d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
-                        />
-                      </svg>
+                      <HelpCircle className="w-5 h-5" />
                     </button>
                   </div>
                 </div>
@@ -1292,25 +1280,28 @@ export default function MainSchedule() {
 
             {/* Кнопки действий */}
             <div className="mt-6">
-              <div className="flex space-x-4">
-                <Button
+              <div className="flex items-center gap-1">
+                <button
                   onClick={() => navigate(`/schedule/${scheduleId}/employees`)}
-                  variant="outline"
+                  className="h-9 w-9 flex items-center justify-center rounded-lg border-2 border-primary text-primary hover:bg-primary hover:text-white transition-colors"
+                  title="Управление сотрудниками"
                 >
-                  Управление сотрудниками
-                </Button>
-                <Button
+                  <Users className="w-5 h-5" />
+                </button>
+                <button
                   onClick={() => navigate(`/schedule/${scheduleId}/profiles`)}
-                  variant="primary"
+                  className="h-9 w-9 flex items-center justify-center rounded-lg border-2 border-primary bg-primary text-white hover:bg-primary/90 transition-colors"
+                  title="Генерация смен"
                 >
-                  Генерация смен
-                </Button>
-                <Button
+                  <Calendar className="w-5 h-5" />
+                </button>
+                <button
                   onClick={() => navigate(`/schedule/${scheduleId}/vacations`)}
-                  variant="outline"
+                  className="h-9 w-9 flex items-center justify-center rounded-lg border-2 border-primary text-primary hover:bg-primary hover:text-white transition-colors"
+                  title="Режим отпусков"
                 >
-                  Режим отпусков
-                </Button>
+                  <Umbrella className="w-5 h-5" />
+                </button>
               </div>
               {selectedSlotForSwap && (
                 <div className="mt-3 p-3 bg-blue-50 border border-blue-200 rounded text-sm text-blue-800">
@@ -1370,9 +1361,12 @@ export default function MainSchedule() {
         {!schedule && !isLoading && (
           <Card className="p-8 text-center">
             <p className="text-gray-500">Расписание не найдено</p>
-            <Button onClick={() => navigate('/') } className="mt-4">
+            <button
+              onClick={() => navigate('/')}
+              className="h-9 px-4 rounded-lg border-2 border-primary text-primary hover:bg-primary hover:text-white transition-colors text-sm font-medium flex items-center mx-auto mt-4"
+            >
               Вернуться к списку
-            </Button>
+            </button>
           </Card>
         )}
 

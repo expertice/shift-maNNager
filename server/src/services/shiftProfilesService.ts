@@ -1377,6 +1377,85 @@ export async function deleteShiftProfile(id: string, scheduleId: string): Promis
 
   console.log('[deleteShiftProfile] Found historical assignments:', allAssignments.length);
 
+  // Проверяем, используется ли профиль в ростере через сотрудников
+  const employeesWithProfile = await prisma.employee.findMany({
+    where: {
+      scheduleId: scheduleId,
+      shiftProfileId: id,
+    },
+    select: {
+      id: true,
+      fullName: true,
+    },
+    take: 5, // Берем только первые 5 для сообщения об ошибке
+  });
+
+  if (employeesWithProfile.length > 0) {
+    const employeeNames = employeesWithProfile.map(emp => emp.fullName).join(', ');
+    const totalCount = await prisma.employee.count({
+      where: {
+        scheduleId: scheduleId,
+        shiftProfileId: id,
+      },
+    });
+    
+    console.log('[deleteShiftProfile] Profile is assigned to employees:', totalCount);
+    throw new Error(
+      `Невозможно удалить профиль. Он назначен ${totalCount} сотрудникам в ростере. ` +
+      (totalCount <= 5 
+        ? `Сотрудники: ${employeeNames}. ` 
+        : `Сотрудники (первые 5): ${employeeNames}... `) +
+      `Сначала снимите профиль с сотрудников.`
+    );
+  }
+
+  // Проверяем, используется ли профиль через паттерны в экземплярах паттернов
+  const patternsInProfile = await prisma.shiftProfilePattern.findMany({
+    where: {
+      shiftProfileId: id,
+    },
+    select: {
+      id: true,
+    },
+  });
+
+  if (patternsInProfile.length > 0) {
+    const patternIds = patternsInProfile.map(p => p.id);
+    const instancesUsingPatterns = await prisma.rosterPatternInstance.findMany({
+      where: {
+        scheduleId: scheduleId,
+        patternId: { in: patternIds },
+      },
+      include: {
+        employee: {
+          select: {
+            fullName: true,
+          },
+        },
+      },
+      take: 5, // Берем только первые 5 для сообщения об ошибке
+    });
+
+    if (instancesUsingPatterns.length > 0) {
+      const employeeNames = instancesUsingPatterns.map(inst => inst.employee.fullName).join(', ');
+      const totalCount = await prisma.rosterPatternInstance.count({
+        where: {
+          scheduleId: scheduleId,
+          patternId: { in: patternIds },
+        },
+      });
+      
+      console.log('[deleteShiftProfile] Profile patterns are used in roster instances:', totalCount);
+      throw new Error(
+        `Невозможно удалить профиль. Его паттерны используются в ростере у ${totalCount} сотрудников. ` +
+        (totalCount <= 5 
+          ? `Сотрудники: ${employeeNames}. ` 
+          : `Сотрудники (первые 5): ${employeeNames}... `) +
+        `Сначала снимите профиль с сотрудников или удалите экземпляры паттернов.`
+      );
+    }
+  }
+
   if (allAssignments.length > 0) {
     // Проверяем, является ли этот профиль последним использованным в расписании
       const latestAssignment = await prisma.scheduleShiftAssignment.findFirst({
@@ -1397,14 +1476,14 @@ export async function deleteShiftProfile(id: string, scheduleId: string): Promis
         ],
       });
 
-    const ACTIVE_SCHEDULE_STATUSES: Array<'draft' | 'published'> = ['published'];
+    const ACTIVE_SCHEDULE_STATUSES: Array<'draft' | 'published' | 'completed'> = ['published', 'completed'];
 
     // Если последнее назначение использует этот профиль и расписание активно - профиль активен
       if (
         latestAssignment &&
         latestAssignment.shiftProfileId === id &&
         latestAssignment.schedule.status &&
-        ACTIVE_SCHEDULE_STATUSES.includes(latestAssignment.schedule.status)
+        ACTIVE_SCHEDULE_STATUSES.includes(latestAssignment.schedule.status as 'draft' | 'published' | 'completed')
       ) {
       console.log('[deleteShiftProfile] Profile is ACTIVELY used by schedule:', latestAssignment.schedule.name);
       throw new Error(
@@ -1416,7 +1495,7 @@ export async function deleteShiftProfile(id: string, scheduleId: string): Promis
     console.log('[deleteShiftProfile] Profile was used historically but is not active anymore');
   }
 
-  console.log('[deleteShiftProfile] Profile is not actively used, proceeding with deletion');
+  console.log('[deleteShiftProfile] Profile is not used in roster, proceeding with deletion');
   
   // Удаляем профиль (каскадное удаление типов смен и паттернов настроено в schema.prisma)
   // Исторические записи в ScheduleShiftAssignment также удалятся через onDelete: Cascade

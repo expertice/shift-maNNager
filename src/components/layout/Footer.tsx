@@ -11,7 +11,7 @@ export const Footer: React.FC = () => {
       <div className="container mx-auto px-4 py-4">
         <div className="flex items-center justify-between text-sm text-gray-600">
           <div>
-            <p>© {currentYear} Норникель. Все права защищены.</p>
+            <p>© {currentYear} Марченко В.Ю. Все права защищены.</p>
           </div>
           <div className="flex items-center space-x-4">
             <span>Версия 0.1.0</span>

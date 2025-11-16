@@ -269,7 +269,7 @@ export default function CompactAnnualCalendar({
                           }
                         >
                           <SlotView
-                            label={day}
+                            label={format(date, 'dd')}
                             color={
                               inVacation
                                 ? '#FCD34D' // желтый для отпуска
@@ -281,20 +281,23 @@ export default function CompactAnnualCalendar({
                                 ? shiftType.color
                                 : undefined
                             }
-                            isEmpty={!shiftType && !inVacation && !inSelection && !isBlocked}
+                            isEmpty={false}
                             isDragging={false}
                             className={classNames({
                               'border-yellow-400 bg-yellow-100': inVacation,
                               'border-blue-400 bg-blue-100': inSelection && !inVacation,
-                              'border-gray-300 bg-gray-200': isBlocked,
+                              'border-gray-300 bg-gray-100': isBlocked || !isEditable,
                               'opacity-30': shiftType && !inVacation && !inSelection && !isBlocked, // бледный цвет для смен
-                              'opacity-50': isBlocked,
+                              'opacity-25': isBlocked || !isEditable,
                             })}
                             textClassName={classNames({
                               'text-gray-400': !isEditable,
                               'text-gray-700': isEditable && !isWeekend,
                               'text-red-600': isEditable && isWeekend,
                             })}
+                            style={(isBlocked || !isEditable) ? {
+                              backgroundImage: 'repeating-linear-gradient(45deg, transparent, transparent 2px, rgba(0, 0, 0, 1) 2px, rgba(0, 0, 0, 1) 4px)',
+                            } : undefined}
                           />
                           
                           {/* Отметка дня рождения */}

@@ -55,7 +55,7 @@ export const vacationsService = {
     scheduleId: string,
     vacationId: string,
     data: UpdateVacationRequest
-  ): Promise<Vacation> => {
+  ): Promise<{ vacation: Vacation; warning?: string }> => {
     const response = await apiClient.put<ApiResponse<Vacation>>(
       `/schedules/${scheduleId}/vacations/${vacationId}`,
       data
@@ -63,7 +63,10 @@ export const vacationsService = {
     if (!response.data.success || !response.data.data) {
       throw new Error(response.data.error || 'Ошибка обновления отпуска');
     }
-    return response.data.data;
+    return {
+      vacation: response.data.data,
+      warning: response.data.warning,
+    };
   },
 
   /**

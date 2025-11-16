@@ -157,20 +157,24 @@ export async function createVacation(data: CreateVacationData): Promise<Vacation
   }
 
   // Валидация 2: Проверка выделенных дней на сотрудника
-  const year = data.startDate.getFullYear();
-  const allocation = await getEmployeeAllocation(scheduleId, data.employeeId, year);
+  // Используем год начала расписания, а не год начала отпуска
+  const scheduleYear = employee.schedule ? new Date(employee.schedule.startDate).getFullYear() : data.startDate.getFullYear();
+  const allocation = await getEmployeeAllocation(scheduleId, data.employeeId, scheduleYear);
+  
+  // Используем allocation, если есть, иначе используем значение из правил
+  const allocatedDays = allocation?.allocatedDays ?? (rules?.availableDays ?? 28);
 
-  if (allocation && allocation.allocatedDays > 0) {
-    const usedDays = await getUsedVacationDays(scheduleId, data.employeeId, year);
+  if (allocatedDays > 0) {
+    const usedDays = await getUsedVacationDays(scheduleId, data.employeeId, scheduleYear);
     
     // Вычисляем количество дней в новом отпуске
     const vacationDays = Math.ceil(
       (data.endDate.getTime() - data.startDate.getTime()) / (1000 * 60 * 60 * 24)
     ) + 1;
 
-    if (usedDays + vacationDays > allocation.allocatedDays) {
+    if (usedDays + vacationDays > allocatedDays) {
       throw new Error(
-        `Превышено выделенное количество дней отпуска. Использовано: ${usedDays}, пытаетесь добавить: ${vacationDays}, доступно: ${allocation.allocatedDays}`
+        `Превышено выделенное количество дней отпуска. Использовано: ${usedDays}, пытаетесь добавить: ${vacationDays}, доступно: ${allocatedDays}`
       );
     }
   }
@@ -265,8 +269,8 @@ export async function createVacation(data: CreateVacationData): Promise<Vacation
   await detectConflicts(vacation.employee.scheduleId);
 
   // Проверяем предупреждение о минимальной длине периода
-  // Используем уже объявленную переменную year из валидации 2
-  const warning = await checkMinContinuousDaysWarning(scheduleId, data.employeeId, year);
+  // Используем уже объявленную переменную scheduleYear из валидации 2
+  const warning = await checkMinContinuousDaysWarning(scheduleId, data.employeeId, scheduleYear);
   
   // Добавляем предупреждение к объекту отпуска (будет использовано в контроллере)
   (vacationWithLimitedEmployee as any).warning = warning.hasWarning ? warning.message : undefined;
@@ -351,20 +355,24 @@ export async function updateVacation(
   }
 
   // Валидация 2: Проверка выделенных дней на сотрудника
-  const year = startDate.getFullYear();
-  const allocation = await getEmployeeAllocation(scheduleId, vacation.employeeId, year);
+  // Используем год начала расписания, а не год начала отпуска
+  const scheduleYear = vacation.employee.schedule ? new Date(vacation.employee.schedule.startDate).getFullYear() : startDate.getFullYear();
+  const allocation = await getEmployeeAllocation(scheduleId, vacation.employeeId, scheduleYear);
+  
+  // Используем allocation, если есть, иначе используем значение из правил
+  const allocatedDays = allocation?.allocatedDays ?? (rules?.availableDays ?? 28);
 
-  if (allocation && allocation.allocatedDays > 0) {
-    const usedDays = await getUsedVacationDays(scheduleId, vacation.employeeId, year, vacationId);
+  if (allocatedDays > 0) {
+    const usedDays = await getUsedVacationDays(scheduleId, vacation.employeeId, scheduleYear, vacationId);
     
     // Вычисляем количество дней в обновленном отпуске
     const vacationDays = Math.ceil(
       (endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24)
     ) + 1;
 
-    if (usedDays + vacationDays > allocation.allocatedDays) {
+    if (usedDays + vacationDays > allocatedDays) {
       throw new Error(
-        `Превышено выделенное количество дней отпуска. Использовано: ${usedDays}, пытаетесь установить: ${vacationDays}, доступно: ${allocation.allocatedDays}`
+        `Превышено выделенное количество дней отпуска. Использовано: ${usedDays}, пытаетесь установить: ${vacationDays}, доступно: ${allocatedDays}`
       );
     }
   }
@@ -420,8 +428,8 @@ export async function updateVacation(
   await detectConflicts(scheduleId);
 
   // Проверяем предупреждение о минимальной длине периода
-  // Используем уже объявленную переменную year из валидации 2
-  const warning = await checkMinContinuousDaysWarning(scheduleId, vacation.employeeId, year);
+  // Используем уже объявленную переменную scheduleYear из валидации 2
+  const warning = await checkMinContinuousDaysWarning(scheduleId, vacation.employeeId, scheduleYear);
   
   // Добавляем предупреждение к объекту отпуска (будет использовано в контроллере)
   (updatedWithLimitedEmployee as any).warning = warning.hasWarning ? warning.message : undefined;

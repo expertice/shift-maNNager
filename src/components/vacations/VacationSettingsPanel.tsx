@@ -8,6 +8,7 @@ import { Save } from 'lucide-react';
 export interface VacationSettingsPanelProps {
   scheduleId: string;
   employees: Employee[];
+  scheduleStart?: Date;
   onClose?: () => void;
   onSaveReady?: (handleSave: () => Promise<void>, isSaving: boolean) => void;
 }
@@ -15,11 +16,13 @@ export interface VacationSettingsPanelProps {
 export default function VacationSettingsPanel({
   scheduleId,
   employees,
+  scheduleStart,
   onClose,
   onSaveReady,
 }: VacationSettingsPanelProps) {
   const queryClient = useQueryClient();
-  const currentYear = new Date().getFullYear();
+  // Используем год начала расписания, а не текущий год
+  const scheduleYear = scheduleStart ? scheduleStart.getFullYear() : new Date().getFullYear();
 
   // Состояние для правил
   const [rules, setRules] = useState<Partial<VacationRules>>({
@@ -39,8 +42,8 @@ export default function VacationSettingsPanel({
 
   // Загрузка выделений
   const { data: vacationAllocations, isLoading: allocationsLoading } = useQuery({
-    queryKey: ['vacationAllocations', scheduleId, currentYear],
-    queryFn: () => vacationRulesService.getEmployeeAllocations(scheduleId, currentYear),
+    queryKey: ['vacationAllocations', scheduleId, scheduleYear],
+    queryFn: () => vacationRulesService.getEmployeeAllocations(scheduleId, scheduleYear),
     enabled: !!scheduleId,
   });
 
@@ -108,7 +111,7 @@ export default function VacationSettingsPanel({
       // Сохраняем выделения
       const allocationsData = employeesRef.current.map(emp => ({
         employeeId: emp.id,
-        year: currentYear,
+        year: scheduleYear,
         allocatedDays: allocationsRef.current[emp.id] ?? 28,
       }));
 
@@ -116,7 +119,7 @@ export default function VacationSettingsPanel({
     } catch (error) {
       console.error('Ошибка при сохранении настроек:', error);
     }
-  }, [currentYear, updateRulesMutation, updateAllocationsMutation]);
+  }, [scheduleYear, updateRulesMutation, updateAllocationsMutation]);
 
   // Передаем handleSave в родительский компонент через callback
   useEffect(() => {
@@ -185,7 +188,7 @@ export default function VacationSettingsPanel({
           {/* Выделенные дни по сотрудникам */}
           <div>
             <h3 className="text-lg font-semibold mb-4">
-              Выделенные дни отпуска на {currentYear} год
+              Выделенные дни отпуска на {scheduleYear} год
             </h3>
             <div className="border rounded-lg overflow-hidden">
               <div className="overflow-x-auto">

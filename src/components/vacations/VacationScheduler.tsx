@@ -291,7 +291,7 @@ export default function VacationScheduler({
   const visibleEmployees = employees;
 
   // Определяем тип сообщения (предупреждение или ошибка)
-  const isWarning = error && (error.includes('Осталось') || error.includes('рекомендуется'));
+  const isWarning = error && (error.includes('Обязательная длина периода отпуска') || error.includes('Осталось') || error.includes('рекомендуется'));
 
   return (
     <div className="flex flex-col">

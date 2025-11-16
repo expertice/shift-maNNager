@@ -43,7 +43,18 @@ export const MainLayout: React.FC<MainLayoutProps> = ({
           {children}
         </main>
       </div>
+      <div
+        className={classNames(
+          'transition-all duration-300',
+          showSidebar && sidebarItems.length > 0
+            ? sidebarCollapsed
+              ? 'ml-16'
+              : 'ml-64'
+            : ''
+        )}
+      >
       <Footer />
+      </div>
     </div>
   );
 };

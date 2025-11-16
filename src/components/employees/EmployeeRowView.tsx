@@ -1,7 +1,6 @@
 import React from 'react';
 import { Employee } from '@types';
-import { Button } from '@components/common';
-import { Eye, EyeOff } from 'lucide-react';
+import { Eye, EyeOff, Pencil, Key, Trash2 } from 'lucide-react';
 
 export interface EmployeeRowViewProps {
   employees: Employee[];
@@ -170,27 +169,27 @@ export const EmployeeRowView: React.FC<EmployeeRowViewProps> = ({
                 {!isSelectionMode && (
                   <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
                     <div className="flex items-center justify-end space-x-2">
-                      <Button
-                        size="sm"
-                        variant="outline"
+                      <button
                         onClick={() => onEdit(employee.id)}
+                        className="p-2 rounded border border-gray-300 hover:bg-gray-50 text-gray-700 transition-colors"
+                        title="Редактировать"
                       >
-                        Редактировать
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="outline"
+                        <Pencil className="h-4 w-4" />
+                      </button>
+                      <button
                         onClick={() => onGeneratePassword(employee.id)}
+                        className="p-2 rounded border border-gray-300 hover:bg-gray-50 text-gray-700 transition-colors"
+                        title="Сгенерировать пароль"
                       >
-                        Пароль
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="danger"
+                        <Key className="h-4 w-4" />
+                      </button>
+                      <button
                         onClick={() => onDelete(employee.id)}
+                        className="p-2 rounded border border-red-300 hover:bg-red-50 text-red-600 transition-colors"
+                        title="Удалить"
                       >
-                        Удалить
-                      </Button>
+                        <Trash2 className="h-4 w-4" />
+                      </button>
                     </div>
                   </td>
                 )}

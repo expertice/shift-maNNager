@@ -288,13 +288,16 @@ export async function checkMinContinuousDaysWarning(
   // Получаем выделенные дни
   const allocation = await getEmployeeAllocation(scheduleId, employeeId, year);
   
-  if (!allocation || allocation.allocatedDays === 0) {
+  // Используем allocation, если есть, иначе используем значение из правил
+  const allocatedDays = allocation?.allocatedDays ?? (rules?.availableDays ?? 28);
+  
+  if (allocatedDays === 0) {
     return { hasWarning: false };
   }
 
   // Получаем использованные дни
   const usedDays = await getUsedVacationDays(scheduleId, employeeId, year);
-  const remainingDays = allocation.allocatedDays - usedDays;
+  const remainingDays = allocatedDays - usedDays;
 
   // Если осталось дней больше или равно минимальной длине - предупреждения нет
   if (remainingDays >= rules.minContinuousDays) {
@@ -331,7 +334,7 @@ export async function checkMinContinuousDaysWarning(
   if (!hasLongPeriod) {
     return {
       hasWarning: true,
-      message: `Осталось ${remainingDays} дней отпуска, что меньше минимальной длины периода (${rules.minContinuousDays} дней). У вас нет периода отпуска длиной ${rules.minContinuousDays} дней или более. Рекомендуется пересмотреть распределение отпусков.`,
+      message: `Обязательная длина периода отпуска (${rules.minContinuousDays} дней): Осталось ${remainingDays} дней отпуска, что меньше минимальной длины периода. У вас нет периода отпуска длиной ${rules.minContinuousDays} дней или более. Рекомендуется пересмотреть распределение отпусков.`,
     };
   }
 

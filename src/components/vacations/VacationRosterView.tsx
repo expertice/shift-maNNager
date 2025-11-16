@@ -86,7 +86,7 @@ const EmployeeRow = memo(({
   isDateInSelection: (date: Date, employeeId: string) => boolean;
   getShiftForDate: (date: Date, employeeId: string) => Shift | null;
   getVacationDayNumber: (date: Date, employeeId: string) => number | null;
-  getRemainingDays: (employeeId: string) => number | null;
+  getRemainingDays: (employeeId: string) => number;
   isLatestVacationDay: (date: Date, employeeId: string) => boolean;
   isDateBlocked: (date: Date) => boolean;
 }) => {
@@ -174,7 +174,7 @@ const EmployeeRow = memo(({
               isSameDay(day, clickedDate.date);
             const vacationDayNumber = inVacation ? getVacationDayNumber(day, employee.id) : null;
             const isLatestDay = isLatestVacationDay(day, employee.id);
-            const remainingDays = isLatestDay ? getRemainingDays(employee.id) : null;
+            const remainingDays = getRemainingDays(employee.id);
             const isBlocked = !inVacation && isDateBlocked(day);
 
             return (
@@ -219,19 +219,22 @@ const EmployeeRow = memo(({
                   className={classNames('h-8', {
                     'border-yellow-400 bg-yellow-100': inVacation,
                     'border-blue-400 bg-blue-100': inSelection && !inVacation,
-                    'border-gray-300 bg-gray-200': isBlocked,
+                    'border-gray-300 bg-gray-100': isBlocked,
                     'opacity-30': shiftType && !inVacation && !inSelection && !isBlocked, // бледный цвет для смен
-                    'opacity-50': isBlocked,
+                    'opacity-25': isBlocked,
                   })}
                   textClassName={classNames({
                     'text-gray-700': !isWeekend && !inVacation,
                     'text-red-600': isWeekend && !inVacation,
                     'text-yellow-900 font-semibold': inVacation,
                   })}
+                  style={isBlocked ? {
+                    backgroundImage: 'repeating-linear-gradient(45deg, transparent, transparent 2px, rgba(0, 0, 0, 1) 2px, rgba(0, 0, 0, 1) 4px)',
+                  } : undefined}
                 />
                 
                 {/* Подсказка с оставшимися днями над последним днем отпуска */}
-                {isLatestDay && remainingDays !== null && (
+                {isLatestDay && (
                   <div
                     className="absolute -top-6 left-1/2 transform -translate-x-1/2 z-50 pointer-events-none whitespace-nowrap"
                     title={`Осталось дней отпуска: ${remainingDays}`}
@@ -315,7 +318,7 @@ const MonthBoard = memo(({
   getShiftForDate: (date: Date, employeeId: string) => Shift | null;
   getWeekdayAbbr: (date: Date) => string;
   getVacationDayNumber: (date: Date, employeeId: string) => number | null;
-  getRemainingDays: (employeeId: string) => number | null;
+  getRemainingDays: (employeeId: string) => number;
   isLatestVacationDay: (date: Date, employeeId: string) => boolean;
   isDateBlocked: (date: Date) => boolean;
 }) => {
@@ -450,12 +453,13 @@ export default function VacationRosterView({
   selectedEmployeeId,
   clickedDate,
 }: VacationRosterViewProps) {
-  const currentYear = new Date().getFullYear();
+  // Определяем год на основе расписания (год начала расписания)
+  const scheduleYear = scheduleStart.getFullYear();
   
-  // Загружаем выделения дней отпуска для всех сотрудников
+  // Загружаем выделения дней отпуска для всех сотрудников для года расписания
   const { data: allocations } = useQuery({
-    queryKey: ['vacationAllocations', scheduleId, currentYear],
-    queryFn: () => vacationRulesService.getEmployeeAllocations(scheduleId, currentYear),
+    queryKey: ['vacationAllocations', scheduleId, scheduleYear],
+    queryFn: () => vacationRulesService.getEmployeeAllocations(scheduleId, scheduleYear),
     enabled: !!scheduleId,
   });
 
@@ -618,35 +622,40 @@ export default function VacationRosterView({
   }, [vacationRules, getVacationCountOnDate]);
 
   // Вычисляем оставшиеся дни отпуска для сотрудника
-  const getRemainingDays = useCallback((employeeId: string): number | null => {
-    const allocatedDays = allocationsByEmployee.get(employeeId);
-    if (!allocatedDays) return null;
+  const getRemainingDays = useCallback((employeeId: string): number => {
+    // Используем значение по умолчанию, если allocation отсутствует
+    // Берем из правил отпусков или стандартное значение 28 дней
+    const defaultDays = vacationRules?.availableDays || 28;
+    const allocatedDays = allocationsByEmployee.get(employeeId) ?? defaultDays;
 
     const employeeVacations = vacationsByEmployee.get(employeeId) || [];
     let usedDays = 0;
 
-    // Вычисляем использованные дни за текущий год
-    const yearStart = new Date(currentYear, 0, 1);
-    const yearEnd = new Date(currentYear, 11, 31, 23, 59, 59);
+    // Вычисляем использованные дни за год расписания
+    const yearStart = new Date(scheduleYear, 0, 1);
+    const yearEnd = new Date(scheduleYear, 11, 31, 23, 59, 59);
 
     for (const vacation of employeeVacations) {
+      // Учитываем только утвержденные и ожидающие отпуска
       if (vacation.status !== 'approved' && vacation.status !== 'pending') continue;
       
       const start = parseLocalDate(vacation.startDate);
       const end = parseLocalDate(vacation.endDate);
       
-      // Проверяем пересечение с текущим годом
+      // Проверяем пересечение с годом расписания
       if (end < yearStart || start > yearEnd) continue;
       
+      // Вычисляем пересечение периода отпуска с годом расписания
       const actualStart = start < yearStart ? yearStart : start;
       const actualEnd = end > yearEnd ? yearEnd : end;
       
+      // Количество дней включительно
       const days = Math.ceil((actualEnd.getTime() - actualStart.getTime()) / (1000 * 60 * 60 * 24)) + 1;
       usedDays += days;
     }
 
     return Math.max(0, allocatedDays - usedDays);
-  }, [allocationsByEmployee, vacationsByEmployee, currentYear]);
+  }, [allocationsByEmployee, vacationsByEmployee, scheduleYear, vacationRules]);
 
   return (
     <div className="w-full overflow-x-hidden">
